@@ -13,7 +13,7 @@ google-auth-httplib2
 langchain
 langmem==0.0.29
 langchain-openai
-langchain-community
+langchain-community==0.3.29
 langgraph
 langchain-tavily
 tiktoken
