@@ -11,9 +11,9 @@ google-auth-httplib2
 
 # LangChain and AI dependencies  
 langchain
-langmem==0.0.29
+langmem
 langchain-openai
-langchain-community==0.3.29
+langchain-community
 langgraph
 langchain-tavily
 tiktoken
