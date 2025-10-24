@@ -3443,19 +3443,23 @@ class DatabaseManager:
         
         try:
             if self.use_rds:
+                # PostgreSQL: use ON CONFLICT on the unique (user_id, project_id) constraint
                 cur.execute(f"""
-                    INSERT INTO recently_viewed_projects (user_id, project_id, view_count) 
-                    VALUES ({placeholder}, {placeholder}, 1)
-                    ON DUPLICATE KEY UPDATE view_count = view_count + 1, viewed_at = CURRENT_TIMESTAMP
+                    INSERT INTO recently_viewed_projects (user_id, project_id, view_count, viewed_at)
+                    VALUES ({placeholder}, {placeholder}, 1, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id, project_id) DO UPDATE
+                    SET view_count = recently_viewed_projects.view_count + 1,
+                        viewed_at = CURRENT_TIMESTAMP
                 """, (user_id, project_id))
             else:
+                # SQLite: use INSERT OR REPLACE and a subselect to increment view_count
                 cur.execute(f"""
                     INSERT OR REPLACE INTO recently_viewed_projects (user_id, project_id, view_count, viewed_at) 
                     VALUES ({placeholder}, {placeholder}, 
                     COALESCE((SELECT view_count FROM recently_viewed_projects WHERE user_id = {placeholder} AND project_id = {placeholder}), 0) + 1,
                     CURRENT_TIMESTAMP)
                 """, (user_id, project_id, user_id, project_id))
-            
+
             conn.commit()
             return cur.rowcount > 0
         finally:
