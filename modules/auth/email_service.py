@@ -94,7 +94,7 @@ class EmailService:
     <div class=\"container\">
         <div class=\"header\">
             <h1>{heading}</h1>
-            <p>Secure access with Esticore</p>
+                <p>Secure access with Ecadoc</p>
         </div>
         <div class=\"content\">
             <h2>Hi {firstname}!</h2>
@@ -108,7 +108,7 @@ class EmailService:
             {footer_section}
         </div>
         <div class=\"footer\">
-            <p>This email was sent by Esticore. If you have questions, please contact our support team.</p>
+                <p>This email was sent by Ecadoc. If you have questions, please contact our support team.</p>
             <p>Code expires at: {{expires_at}}</p>
         </div>
     </div>
@@ -135,7 +135,7 @@ class EmailService:
             text_lines.extend(["", footer_note])
 
         text_lines.append("")
-        text_lines.append("Esticore Team")
+        text_lines.append("Ecadoc Team")
 
         text_body = "\n".join(text_lines)
         return html_body, text_body
@@ -190,11 +190,11 @@ class EmailService:
                 email=email,
                 firstname=firstname,
                 purpose="email_verification",
-                subject="Your Verification Code - Esticore",
+                    subject="Your Verification Code - Ecadoc",
                 heading="Verify Your Email",
                 intro_text="Thank you for signing up for Esticore. Please use the verification code below to complete your registration.",
-                instructions=[
-                    "Return to the Esticore application",
+                    instructions=[
+                        "Return to the Ecadoc application",
                     "Enter the 6-digit code above",
                     "Complete your account verification"
                 ],
@@ -206,20 +206,20 @@ class EmailService:
 
     def send_login_otp_email(self, user_id: int, email: str, firstname: str, provider: str = "password") -> bool:
         """Send OTP email for login confirmation"""
-        intro = "We noticed a login attempt to your Esticore account. Enter the code below to confirm it's you."
+        intro = "We noticed a login attempt to your Ecadoc account. Enter the code below to confirm it's you."
         if provider == "google":
-            intro = "We noticed a Google sign-in attempt to your Esticore account. Enter the code below to confirm it's you."
+                intro = "We noticed a Google sign-in attempt to your Ecadoc account. Enter the code below to confirm it's you."
 
         return self._send_otp_email(
             user_id=user_id,
             email=email,
             firstname=firstname,
             purpose="login",
-            subject="Your Login Code - Esticore",
+                subject="Your Login Code - Ecadoc",
             heading="Confirm Your Login",
             intro_text=intro,
             instructions=[
-                "Return to the Esticore login screen",
+                    "Return to the Ecadoc login screen",
                 "Enter the 6-digit code",
                 "Continue to your workspace"
             ]
@@ -232,9 +232,9 @@ class EmailService:
             email=email,
             firstname=firstname,
             purpose="password_reset",
-            subject="Reset Your Password - Esticore",
+                subject="Reset Your Password - Ecadoc",
             heading="Password Reset Request",
-            intro_text="A password reset was requested for your Esticore account. Use the code below to continue.",
+                intro_text="A password reset was requested for your Ecadoc account. Use the code below to continue.",
             instructions=[
                 "Return to the password reset screen",
                 "Enter the 6-digit code",
@@ -282,8 +282,8 @@ class EmailService:
         </div>
         <div class=\"content\">
             <p>Hi {invitee_name},</p>
-            <p><strong>{inviter_name}</strong> invited you to collaborate on the project <strong>{project_name}</strong> in Esticore.</p>
-            <p>You can accept or decline the invitation directly from the notifications panel inside Esticore.</p>
+                <p><strong>{inviter_name}</strong> invited you to collaborate on the project <strong>{project_name}</strong> in Ecadoc.</p>
+                <p>You can accept or decline the invitation directly from the notifications panel inside Ecadoc.</p>
             {action_button}
             <p>If you weren't expecting this, you can safely ignore the email.</p>
         </div>
@@ -339,10 +339,10 @@ If you weren't expecting this, you can ignore this email.
             </div>
             
             <h2>Hi {firstname}!</h2>
-            <p>Congratulations! Your email has been verified and your Esticore account is now fully active.</p>
+                <p>Congratulations! Your email has been verified and your Ecadoc account is now fully active.</p>
             
             <p style="text-align: center;">
-                <a href="{self.frontend_url}/login" class="button">Start Using Esticore</a>
+                    <a href="{self.frontend_url}/login" class="button">Start Using Ecadoc</a>
             </p>
             
             <p><strong>What you can do now:</strong></p>
@@ -368,16 +368,11 @@ Hi {firstname}!
 Your Esticore account is now fully active and ready to use.
 
 What you can do now:
-- Upload and process floor plan documents
-- Use AI-powered annotation tools
-- Create and manage projects
-- Access all premium features
 
 Welcome aboard! We're excited to help you with your floor plan analysis needs.
 
 Login at: {self.frontend_url}/login
 
----
 Esticore Team
             """
             
@@ -397,7 +392,7 @@ Esticore Team
             # Create message
             msg = MIMEMultipart('alternative')
             msg['Subject'] = subject
-            msg['From'] = f"Esticore <{self.from_email}>"
+            msg['From'] = f"Ecadoc <{self.from_email}>"
             msg['To'] = to_email
             
             # Attach parts
