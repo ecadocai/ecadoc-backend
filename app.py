@@ -39,7 +39,7 @@ def create_app() -> FastAPI:
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000", "https://esticore.vercel.app","https://ecadocai.netlify.app"],
+        allow_origins=["http://localhost:3000", "https://esticore.vercel.app","https://ecadocai.netlify.app", "https://app.ecadoc.ai"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
