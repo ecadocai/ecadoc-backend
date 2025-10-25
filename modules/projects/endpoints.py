@@ -166,18 +166,18 @@ async def get_project(
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        session_id: Optional[str] = None
+        # Return only an existing PROJECT-context session id (do NOT create one here).
         if user_id is not None:
             if user_id != current_user_id:
                 raise HTTPException(
                     status_code=403,
                     detail="Access denied to requested user's project session",
                 )
-            session_id = db_manager.get_project_session(user_id, project_id)
+            session_id = session_manager.get_session_by_context(user_id, "PROJECT", project_id)
+        else:
+            session_id = session_manager.get_session_by_context(current_user_id, "PROJECT", project_id)
 
-        if not session_id:
-            session_id = agent_workflow.get_or_create_chat_session()
-
+        # session_id may be None if no session was ever created for this project; return the project as-is in that case.
         project["session_id"] = session_id
 
         # Side effects / logs

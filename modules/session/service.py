@@ -157,6 +157,14 @@ class SessionManager:
         if session:
             return session.context_type, session.context_id
         return None, None
+
+    def get_session_by_context(self, user_id: int, context_type: str, context_id: str = None) -> Optional[str]:
+        """Return the session_id for the most recent active session matching the context for the user.
+
+        This performs a read-only lookup and will NOT create a session if none exists.
+        """
+        session = self.db.get_session_by_context(user_id, context_type, context_id)
+        return session.session_id if session else None
     
     def validate_session_access(self, session_id: str, user_id: int) -> bool:
         """Validate that a user has access to a session"""
