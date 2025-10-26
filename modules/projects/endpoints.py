@@ -3,8 +3,6 @@ Project management API endpoints for the Floor Plan Agent API
 """
 
 from typing import Optional, List
-import os
-import tempfile
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 
@@ -244,48 +242,23 @@ async def add_documents_to_project(
         if not project_service.validate_project_access(project_id, user_id):
             raise HTTPException(status_code=403, detail="Access denied or project not found")
 
-        # Validate file types and stream uploads to disk to avoid holding large files in memory
+        # Validate file types and process files
         valid_files: List[UploadFile] = []
         for f in files:
             if not f.filename.lower().endswith(".pdf"):
                 raise HTTPException(status_code=400, detail="Only PDF files are allowed")
             valid_files.append(f)
 
-        temp_paths: List[str] = []
-        filenames: List[str] = []
+        file_contents = [await f.read() for f in valid_files]
+        filenames = [f.filename for f in valid_files]
 
-        try:
-            for f in valid_files:
-                # Create a named temp file and stream the upload into it
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-                tmp_path = tmp.name
-                tmp.close()
-                # Stream in chunks to avoid reading entire file into memory
-                with open(tmp_path, "wb") as out_f:
-                    while True:
-                        chunk = await f.read(64 * 1024)
-                        if not chunk:
-                            break
-                        out_f.write(chunk)
-
-                temp_paths.append(tmp_path)
-                filenames.append(f.filename)
-
-            # Add documents to project using path-based upload
-            result = project_service.add_documents_to_project_from_paths(
-                project_id=project_id,
-                file_paths=temp_paths,
-                filenames=filenames,
-                user_id=user_id,
-            )
-        finally:
-            # Clean up any temp files that still exist (service may have moved them on success)
-            for p in temp_paths:
-                try:
-                    if os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
+        # Add documents to project
+        result = project_service.add_documents_to_project(
+            project_id=project_id,
+            file_contents=file_contents,
+            filenames=filenames,
+            user_id=user_id,
+        )
 
         db_manager.log_user_activity(
             user_id,

@@ -396,54 +396,6 @@ class ProjectService:
             
         except Exception as e:
             raise ValueError(f"Failed to add documents to project: {str(e)}")
-
-    def add_documents_to_project_from_paths(
-        self,
-        project_id: str,
-        file_paths: List[str],
-        filenames: List[str],
-        user_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Add one or more PDF documents to an existing project using file paths (streamed uploads)."""
-        # Check if project exists
-        project = self.db.get_project_by_id(project_id)
-        if not project:
-            raise ValueError("Project not found")
-
-        try:
-            # Upload and index all PDFs from file paths
-            document_info = []
-
-            for i, (file_path, filename) in enumerate(zip(file_paths, filenames)):
-                pdf_result = pdf_processor.upload_and_index_pdf_from_path(file_path, filename, project.user_id)
-
-                document_info.append({
-                    "doc_id": pdf_result["doc_id"],
-                    "filename": pdf_result["filename"],
-                    "pages": pdf_result["pages"],
-                    "chunks_indexed": pdf_result["chunks_indexed"]
-                })
-
-            # Update the project with the new document IDs
-            for doc_info in document_info:
-                self.db.add_document_to_project(project_id, doc_info["doc_id"])
-
-            # Also update the projects table for backward compatibility
-            doc_ids = project.doc_ids if project.doc_ids else []
-            for doc_info in document_info:
-                if doc_info["doc_id"] not in doc_ids:
-                    doc_ids.append(doc_info["doc_id"])
-
-            self.db.update_project_document(project_id, doc_ids)
-
-            result = {
-                "project_id": project_id,
-                "documents": document_info
-            }
-            return result
-
-        except Exception as e:
-            raise ValueError(f"Failed to add documents to project: {str(e)}")
     
     def update_project(self, project_id: str, name: str = None, description: str = None) -> Dict[str, Any]:
         """Update project details"""
