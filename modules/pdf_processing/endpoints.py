@@ -158,7 +158,7 @@ async def query_document(doc_id: str, question: str = Form(...), k: int = Form(5
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/{doc_id}")
-def delete_document(doc_id: str, user_id: int = None):
+def delete_document(doc_id: str, user_id: int | None = None, current_user_id: int = Depends(get_current_user_id)):
     """
     Delete a document and all associated files (PDF and vectors)
     Optionally verify user ownership
@@ -166,11 +166,11 @@ def delete_document(doc_id: str, user_id: int = None):
     try:
         # If user_id is provided, verify ownership
         if user_id is not None:
-            current_user_id = Depends(get_current_user_id)
+            # Ensure the caller is the authenticated user when passing user_id explicitly
             if user_id != current_user_id:
                 raise HTTPException(status_code=403, detail="Access denied: caller mismatch")
             doc_info = pdf_processor.get_document_info(doc_id)
-            if doc_info.get("user_id") != user_id:
+            if doc_info.get("user_id") != current_user_id:
                 raise HTTPException(status_code=403, detail="Access denied: You don't own this document")
         
         success = pdf_processor.delete_document_files(doc_id)
@@ -184,13 +184,15 @@ def delete_document(doc_id: str, user_id: int = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/user/{user_id}")
-def delete_user_documents(user_id: int):
+def delete_user_documents(user_id: int, current_user_id: int = Depends(get_current_user_id)):
     """
     Delete all documents for a specific user
     """
     try:
-        current_user_id = Depends(get_current_user_id)
-        documents = pdf_processor.list_documents(user_id if user_id == current_user_id else None)
+        if user_id != current_user_id:
+            raise HTTPException(status_code=403, detail="Access denied to requested user's documents")
+
+        documents = pdf_processor.list_documents(user_id)
         deleted_count = 0
         failed_deletions = []
         

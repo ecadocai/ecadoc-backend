@@ -651,22 +651,51 @@ def generate_frontend_annotations(
         else:
             objects_to_annotate = all_objects
 
-        # Map simple types to pdf.js tool IDs
+        # Map simple types and various frontend tool names to tool IDs used by the frontend/pdf.js
+        # Note: the frontend may send a variety of human-friendly names — accept those and map
+        # them to the canonical tool IDs. Keys are lower-cased because annotation_type is lower()-ed.
         tool_id_map = {
+            # existing canonical mappings
             'highlight': 'markup.highlight',
             'rectangle': 'shape.rectangle',
-            'circle': 'shape.ellipse', # pdf.js uses ellipse for circles
-            'count': 'text.free', # Use free text to display a number
-            'arrow': 'shape.arrow'
+            'circle': 'shape.ellipse',  # pdf.js uses ellipse for circles
+            'count': 'text.free',  # Use free text to display a number
+            'arrow': 'shape.arrow',
+
+            # additional frontend tool names (aliases) provided by the UI
+            'length tool': 'measure.length',
+            'measure distances and lengths': 'measure.length',
+            'polyline length': 'measure.polyline_length',
+            'measure polyline lengths': 'measure.polyline_length',
+            'area measurement': 'measure.area',
+            'measure areas and regions': 'measure.area',
+            'perimeter measurement': 'measure.perimeter',
+            'select hand': 'select.hand',
+            'cloud': 'shape.cloud',
+            'shapes': 'shape.free',
+            'note': 'text.free',
+            'polyline callout': 'shape.polyline'
         }
-        
-        # Default properties
+
+        # Default properties / color choices for the accepted annotation types and aliases
         color_map = {
-            'highlight': '#FFFF00', # Yellow
-            'rectangle': '#FF0000', # Red
-            'circle': '#0000FF',    # Blue
-            'count': '#00FF00',     # Green
-            'arrow': '#FF00FF'      # Magenta
+            'highlight': '#FFFF00',  # Yellow
+            'rectangle': '#FF0000',  # Red
+            'circle': '#0000FF',     # Blue
+            'count': '#00FF00',      # Green
+            'arrow': '#FF00FF',      # Magenta
+            'length tool': '#00BFFF',
+            'measure distances and lengths': '#00BFFF',
+            'polyline length': '#00BFFF',
+            'measure polyline lengths': '#00BFFF',
+            'area measurement': '#FFA500',
+            'measure areas and regions': '#FFA500',
+            'perimeter measurement': '#FFA500',
+            'select hand': '#808080',
+            'cloud': '#C0C0C0',
+            'shapes': '#B22222',
+            'note': '#228B22',
+            'polyline callout': '#8A2BE2'
         }
 
         tool_id = tool_id_map.get(annotation_type.lower())

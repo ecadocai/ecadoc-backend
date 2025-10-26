@@ -174,6 +174,7 @@ class AgentWorkflow:
    - **Tool**: Use `internet_search`.
 
 **--- CRITICAL RULES FOR ALL RESPONSES ---**
+- **Do not use em dashes** Replace em dashes with commas, colons, or semicolons
 - **ANNOTATION IS ALWAYS JSON**: If the user's final intent is annotation, your final response MUST be the raw JSON from the `generate_frontend_annotations` tool. No exceptions.
 - **NO FILE PATHS**: Never include file paths, download URLs, or markdown links like `[Download](path)` in your responses to the user.
 - **STICK TO THE WORKFLOWS**: Do not mix workflows. An annotation request follows the annotation workflow. A measurement request follows the measurement workflow.

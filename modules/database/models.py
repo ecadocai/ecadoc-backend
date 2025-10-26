@@ -2932,51 +2932,93 @@ class DatabaseManager:
         finally:
             conn.close()
     def get_all_subscription_plans(self) -> List[SubscriptionPlan]:
-        """Get all subscription plans"""
+        """Get all subscription plans.
+
+        This implementation is defensive: older databases may be missing some
+        columns (eg. price_quarterly). We SELECT * and then map available
+        columns to the SubscriptionPlan dataclass, parsing `features` robustly.
+        Results are sorted in Python by price_quarterly (fallback to price_annual
+        or 0.0) to preserve previous ordering behavior.
+        """
         conn = self.get_connection()
         cur = conn.cursor()
-        
+
         try:
-            cur.execute("SELECT id, name, description, price_quarterly, price_annual, storage_gb, project_limit, user_limit, action_limit, features, is_active, has_free_trial, trial_days, created_at FROM subscription_plans ORDER BY price_quarterly ASC")
+            cur.execute("SELECT * FROM subscription_plans")
             rows = cur.fetchall()
-            
-            plans = []
+
+            # Build column name -> index map from cursor.description if available
+            col_idx = {}
+            if cur.description:
+                for idx, col in enumerate(cur.description):
+                    # col[0] is the name in most DB adapters
+                    col_name = col[0] if isinstance(col, (list, tuple)) else getattr(col, 'name', None)
+                    if not col_name:
+                        # Fallback for sqlite/simple cursors
+                        col_name = col
+                    col_idx[col_name] = idx
+
+            plans: List[SubscriptionPlan] = []
+
             for row in rows:
-                # Enhanced debugging for each row
-                print(f"Plan {row[0]} - Raw features from DB: {repr(row[9])}")
-                print(f"Plan {row[0]} - Features type: {type(row[9])}")
-                
-                features = []
-                features_data = row[9]
-                
-                # More robust parsing logic
-                if features_data:
+                # Helper to safely get by column name
+                def get(col_name, default=None):
+                    idx = col_idx.get(col_name)
+                    if idx is None:
+                        return default
                     try:
-                        # Handle the case where it might already be a list or need JSON parsing
-                        if isinstance(features_data, (list, dict)):
-                            features = features_data
-                        elif isinstance(features_data, str):
-                            features = json.loads(features_data)
+                        return row[idx]
+                    except Exception:
+                        return default
+
+                raw_features = get('features')
+                features: List = []
+                if raw_features:
+                    try:
+                        if isinstance(raw_features, (list, dict)):
+                            features = raw_features
+                        elif isinstance(raw_features, (bytes, memoryview)):
+                            # Convert binary JSONB -> str
+                            raw = bytes(raw_features).decode('utf-8')
+                            features = json.loads(raw)
+                        elif isinstance(raw_features, str):
+                            features = json.loads(raw_features)
                         else:
-                            # For other types (like PostgreSQL JSONB), try direct conversion
-                            features = list(features_data) if hasattr(features_data, '__iter__') and not isinstance(features_data, str) else []
-                        
-                        print(f"Plan {row[0]} - Successfully parsed features: {features}")
-                    except (json.JSONDecodeError, TypeError, ValueError) as e:
-                        print(f"Plan {row[0]} - JSON parsing error: {e}")
-                        print(f"Plan {row[0]} - Problematic data: {repr(features_data)}")
+                            # Try best-effort conversion
+                            features = list(raw_features) if hasattr(raw_features, '__iter__') else []
+                    except Exception:
                         features = []
-                else:
-                    print(f"Plan {row[0]} - Features data is None or empty")
-                    features = []
-                
-                plans.append(SubscriptionPlan(
-                    id=row[0], name=row[1], description=row[2], 
-                    price_quarterly=float(row[3]), price_annual=float(row[4]),
-                    storage_gb=row[5], project_limit=row[6], user_limit=row[7],
-                    action_limit=row[8], features=features, is_active=bool(row[10]),
-                    has_free_trial=bool(row[11]), trial_days=row[12], created_at=row[13]
-                ))
+
+                # Determine prices with fallbacks
+                try:
+                    price_quarterly = float(get('price_quarterly', get('price', 0.0) or 0.0))
+                except Exception:
+                    price_quarterly = 0.0
+                try:
+                    price_annual = float(get('price_annual', 0.0) or 0.0)
+                except Exception:
+                    price_annual = 0.0
+
+                plan = SubscriptionPlan(
+                    id=get('id'),
+                    name=get('name'),
+                    description=get('description'),
+                    price_quarterly=price_quarterly,
+                    price_annual=price_annual,
+                    storage_gb=get('storage_gb') or 0,
+                    project_limit=get('project_limit') or 0,
+                    user_limit=get('user_limit') or 1,
+                    action_limit=get('action_limit') or 0,
+                    features=features,
+                    is_active=bool(get('is_active', True)),
+                    has_free_trial=bool(get('has_free_trial', False)),
+                    trial_days=get('trial_days') or 0,
+                    created_at=get('created_at')
+                )
+                plans.append(plan)
+
+            # Sort by price_quarterly (fallback to price_annual or 0.0)
+            plans.sort(key=lambda p: (p.price_quarterly or p.price_annual or 0.0))
             return plans
         finally:
             conn.close()
@@ -2984,31 +3026,66 @@ class DatabaseManager:
         """Get subscription plan by ID"""
         conn = self.get_connection()
         cur = conn.cursor()
-        placeholder = self._get_placeholder()  # This should be "%s" for PostgreSQL
-        
         try:
-            # Use the placeholder variable correctly
-            query = f"SELECT id, name, description, price_quarterly, price_annual, storage_gb, project_limit, user_limit, action_limit, features, is_active, has_free_trial, trial_days, created_at FROM subscription_plans WHERE id = {placeholder}"
-            cur.execute(query, (plan_id,))  # Pass parameters as a tuple
+            # Use a flexible SELECT to avoid errors if the schema is older/missing columns
+            if self.use_rds:
+                cur.execute("SELECT * FROM subscription_plans WHERE id = %s", (plan_id,))
+            else:
+                cur.execute("SELECT * FROM subscription_plans WHERE id = ?", (plan_id,))
             row = cur.fetchone()
-            
-            if row:
-                
-                features = []
-                if row[9]:
-                    try:
-                        features = json.loads(row[9])
-                    except:
-                        features = []
-                
-                return SubscriptionPlan(
-                    id=row[0], name=row[1], description=row[2], 
-                    price_quarterly=float(row[3]), price_annual=float(row[4]),
-                    storage_gb=row[5], project_limit=row[6], user_limit=row[7],
-                    action_limit=row[8], features=features, is_active=bool(row[10]),
-                    has_free_trial=bool(row[11]), trial_days=row[12], created_at=row[13]
-                )
-            return None
+
+            if not row:
+                return None
+
+            # Build column mapping
+            col_idx = {}
+            if cur.description:
+                for idx, col in enumerate(cur.description):
+                    col_name = col[0] if isinstance(col, (list, tuple)) else getattr(col, 'name', None)
+                    if not col_name:
+                        col_name = col
+                    col_idx[col_name] = idx
+
+            def get(col_name, default=None):
+                idx = col_idx.get(col_name)
+                if idx is None:
+                    return default
+                try:
+                    return row[idx]
+                except Exception:
+                    return default
+
+            raw_features = get('features')
+            features = []
+            if raw_features:
+                try:
+                    if isinstance(raw_features, str):
+                        features = json.loads(raw_features)
+                    elif isinstance(raw_features, (list, dict)):
+                        features = raw_features
+                    elif isinstance(raw_features, (bytes, memoryview)):
+                        features = json.loads(bytes(raw_features).decode('utf-8'))
+                except Exception:
+                    features = []
+
+            try:
+                price_quarterly = float(get('price_quarterly', get('price', 0.0) or 0.0))
+            except Exception:
+                price_quarterly = 0.0
+            try:
+                price_annual = float(get('price_annual', 0.0) or 0.0)
+            except Exception:
+                price_annual = 0.0
+
+            return SubscriptionPlan(
+                id=get('id'), name=get('name'), description=get('description'),
+                price_quarterly=price_quarterly, price_annual=price_annual,
+                storage_gb=get('storage_gb') or 0, project_limit=get('project_limit') or 0,
+                user_limit=get('user_limit') or 1, action_limit=get('action_limit') or 0,
+                features=features, is_active=bool(get('is_active', True)),
+                has_free_trial=bool(get('has_free_trial', False)), trial_days=get('trial_days') or 0,
+                created_at=get('created_at')
+            )
         finally:
             conn.close()
     
@@ -3016,28 +3093,62 @@ class DatabaseManager:
         """Get subscription plan by name"""
         conn = self.get_connection()
         cur = conn.cursor()
-        placeholder = self._get_placeholder()
-        
         try:
-            cur.execute("SELECT id, name, description, price_quarterly, price_annual, storage_gb, project_limit, user_limit, action_limit, features, is_active, has_free_trial, trial_days, created_at FROM subscription_plans WHERE name = ?", (name,))
+            query = "SELECT * FROM subscription_plans WHERE name = %s" if self.use_rds else "SELECT * FROM subscription_plans WHERE name = ?"
+            cur.execute(query, (name,))
             row = cur.fetchone()
-            
-            if row:
-                features = []
-                if row[9]:
-                    try:
-                        features = json.loads(row[9])
-                    except:
-                        features = []
-                
-                return SubscriptionPlan(
-                    id=row[0], name=row[1], description=row[2], 
-                    price_quarterly=float(row[3]), price_annual=float(row[4]),
-                    storage_gb=row[5], project_limit=row[6], user_limit=row[7],
-                    action_limit=row[8], features=features, is_active=bool(row[10]),
-                    has_free_trial=bool(row[11]), trial_days=row[12], created_at=row[13]
-                )
-            return None
+            if not row:
+                return None
+
+            # Column mapping
+            col_idx = {}
+            if cur.description:
+                for idx, col in enumerate(cur.description):
+                    col_name = col[0] if isinstance(col, (list, tuple)) else getattr(col, 'name', None)
+                    if not col_name:
+                        col_name = col
+                    col_idx[col_name] = idx
+
+            def get(col_name, default=None):
+                idx = col_idx.get(col_name)
+                if idx is None:
+                    return default
+                try:
+                    return row[idx]
+                except Exception:
+                    return default
+
+            raw_features = get('features')
+            features = []
+            if raw_features:
+                try:
+                    if isinstance(raw_features, str):
+                        features = json.loads(raw_features)
+                    elif isinstance(raw_features, (list, dict)):
+                        features = raw_features
+                    elif isinstance(raw_features, (bytes, memoryview)):
+                        features = json.loads(bytes(raw_features).decode('utf-8'))
+                except Exception:
+                    features = []
+
+            try:
+                price_quarterly = float(get('price_quarterly', get('price', 0.0) or 0.0))
+            except Exception:
+                price_quarterly = 0.0
+            try:
+                price_annual = float(get('price_annual', 0.0) or 0.0)
+            except Exception:
+                price_annual = 0.0
+
+            return SubscriptionPlan(
+                id=get('id'), name=get('name'), description=get('description'),
+                price_quarterly=price_quarterly, price_annual=price_annual,
+                storage_gb=get('storage_gb') or 0, project_limit=get('project_limit') or 0,
+                user_limit=get('user_limit') or 1, action_limit=get('action_limit') or 0,
+                features=features, is_active=bool(get('is_active', True)),
+                has_free_trial=bool(get('has_free_trial', False)), trial_days=get('trial_days') or 0,
+                created_at=get('created_at')
+            )
         finally:
             conn.close()
     
@@ -5117,6 +5228,34 @@ class DatabaseManager:
             return cur.rowcount > 0
         finally:
             conn.close()
+
+    def delete_document(self, doc_id: str) -> bool:
+        """Delete a document record and any project-document links."""
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+            placeholder = self._get_placeholder()
+
+            # Remove any project-document junctions first (safe even if none exist)
+            try:
+                cur.execute(f"DELETE FROM project_documents WHERE doc_id = {placeholder}", (doc_id,))
+            except Exception:
+                # If the project_documents table doesn't exist or delete fails, continue
+                pass
+
+            # Delete the document record
+            cur.execute(f"DELETE FROM documents WHERE doc_id = {placeholder}", (doc_id,))
+            conn.commit()
+
+            return cur.rowcount > 0
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            raise Exception(f"Error deleting document: {e}")
+        finally:
+            if conn:
+                conn.close()
 
     def update_project_details(self, project_id: str, name: str = None, description: str = None):
         """Update project details"""

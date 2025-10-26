@@ -7,6 +7,7 @@ from datetime import datetime
 import io
 from typing import List, Dict, Any, Optional
 from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -92,12 +93,17 @@ class PDFProcessor:
             pdf_source: Either a file path (str) or bytes data
             doc_id: Document identifier
         """
-        if isinstance(pdf_source, bytes):
-            # Read from bytes (database storage)
-            reader = PdfReader(io.BytesIO(pdf_source))
-        else:
-            # Read from file path (legacy file storage)
-            reader = PdfReader(pdf_source)
+        try:
+            if isinstance(pdf_source, bytes):
+                # Read from bytes (database storage)
+                reader = PdfReader(io.BytesIO(pdf_source), strict=False)
+            else:
+                # Read from file path (legacy file storage)
+                # pass strict=False to be tolerant of small PDF issues (e.g. missing EOF marker)
+                reader = PdfReader(pdf_source, strict=False)
+        except PdfReadError as e:
+            # Give a clearer error message so endpoints return useful info to callers
+            raise ValueError(f"Failed to read PDF: {e}") from e
         
         docs: List[Document] = []
         
@@ -362,12 +368,27 @@ class PDFProcessor:
                 f.write(file_content)
             file_id = None
         
-        # Get page count first
-        if self.use_database_storage:
-            reader = PdfReader(io.BytesIO(file_content))
-        else:
-            reader = PdfReader(pdf_path)
-        num_pages = len(reader.pages)
+        # Get page count first. Use strict=False to tolerate some malformed PDFs
+        try:
+            if self.use_database_storage:
+                reader = PdfReader(io.BytesIO(file_content), strict=False)
+            else:
+                reader = PdfReader(pdf_path, strict=False)
+            num_pages = len(reader.pages)
+        except PdfReadError as e:
+            # Clean up any stored file(s) if present
+            if self.use_database_storage:
+                try:
+                    db_manager.delete_file(file_id)
+                except Exception:
+                    pass
+            else:
+                try:
+                    if os.path.exists(pdf_path):
+                        os.remove(pdf_path)
+                except Exception:
+                    pass
+            raise ValueError(f"Failed to read uploaded PDF (possibly corrupted or truncated): {e}") from e
         
         # Create document record FIRST (required for foreign key constraint)
         try:
@@ -470,6 +491,169 @@ class PDFProcessor:
             "total_files": len(file_contents),
             "successful_count": len(results),
             "failed_count": len(errors)
+        }
+
+    def upload_and_index_pdf_from_path(self, file_path: str, filename: str, user_id: int) -> dict:
+        """Upload and index a PDF given a filesystem path.
+
+        This is used for large uploads that are streamed to disk to avoid holding
+        the entire file in memory. The method will move the file into the
+        configured documents directory for legacy filesystem storage, or read
+        and store it into the database if database storage is enabled.
+        """
+        if not filename.lower().endswith(".pdf"):
+            raise ValueError("Please upload a PDF file")
+
+        if not os.path.exists(file_path):
+            raise ValueError("Temporary uploaded file not found")
+
+        doc_id = uuid.uuid4().hex
+
+        try:
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        except Exception:
+            file_size_mb = 0
+
+        user_storage = db_manager.get_user_storage(user_id)
+        if not user_storage:
+            db_manager.create_user_storage(user_id)
+            user_storage = db_manager.get_user_storage(user_id)
+
+        storage_limit_mb = self._get_user_storage_limit_mb(user_id)
+        if user_storage and user_storage.used_storage_mb + file_size_mb > storage_limit_mb:
+            available = storage_limit_mb - user_storage.used_storage_mb
+            raise ValueError(
+                f"Storage limit exceeded. Available: {max(0, available):.2f}MB, Required: {file_size_mb:.2f}MB"
+            )
+
+        file_id = None
+
+        # If database storage is enabled, read file into memory to store in DB
+        if self.use_database_storage:
+            with open(file_path, 'rb') as f:
+                file_bytes = f.read()
+
+            file_id = str(uuid.uuid4())
+            try:
+                db_manager.store_file(
+                    file_id=file_id,
+                    filename=filename,
+                    content_type="application/pdf",
+                    file_data=file_bytes,
+                    user_id=user_id
+                )
+            except Exception as e:
+                raise ValueError(f"Failed to store file in database: {e}") from e
+
+        else:
+            # Move file into configured docs directory with doc_id as name
+            pdf_path = os.path.join(settings.DOCS_DIR, f"{doc_id}.pdf")
+            os.makedirs(settings.DOCS_DIR, exist_ok=True)
+            try:
+                import shutil
+                shutil.move(file_path, pdf_path)
+            except Exception as e:
+                # If move fails, try to copy instead
+                try:
+                    import shutil
+                    shutil.copyfile(file_path, pdf_path)
+                    os.remove(file_path)
+                except Exception as e2:
+                    raise ValueError(f"Failed to move uploaded file into storage: {e} / {e2}") from e2
+
+        # Determine page count
+        try:
+            if self.use_database_storage:
+                reader = PdfReader(io.BytesIO(file_bytes), strict=False)
+            else:
+                reader = PdfReader(pdf_path, strict=False)
+            num_pages = len(reader.pages)
+        except PdfReadError as e:
+            # Clean up DB/file if needed
+            if self.use_database_storage:
+                try:
+                    db_manager.delete_file(file_id)
+                except Exception:
+                    pass
+            else:
+                try:
+                    if os.path.exists(pdf_path):
+                        os.remove(pdf_path)
+                except Exception:
+                    pass
+            raise ValueError(f"Failed to read uploaded PDF (possibly corrupted or truncated): {e}") from e
+
+        # Create document record
+        try:
+            if self.use_database_storage:
+                db_manager.create_document(
+                    doc_id=doc_id,
+                    filename=filename,
+                    file_id=file_id,
+                    pages=num_pages,
+                    chunks_indexed=0,
+                    user_id=user_id
+                )
+                n_chunks = self.index_pdf(doc_id, file_bytes)
+            else:
+                vector_path = os.path.join(settings.VECTORS_DIR, doc_id)
+                db_manager.create_document(
+                    doc_id=doc_id,
+                    filename=filename,
+                    file_id="",
+                    pages=num_pages,
+                    chunks_indexed=0,
+                    user_id=user_id,
+                    pdf_path=pdf_path,
+                    vector_path=vector_path
+                )
+                n_chunks = self.index_pdf(doc_id, pdf_path)
+
+            # Update chunk counts and storage metrics
+            db_manager.update_document_chunks_indexed(doc_id, n_chunks)
+            latest_storage = db_manager.get_user_storage(user_id)
+            base_usage = latest_storage.used_storage_mb if latest_storage else 0
+            db_manager.update_user_storage(user_id, base_usage + file_size_mb)
+            db_manager.log_user_activity(
+                user_id,
+                "document_uploaded",
+                {
+                    "doc_id": doc_id,
+                    "filename": filename,
+                    "file_size_mb": round(file_size_mb, 2),
+                }
+            )
+
+        except Exception as e:
+            # Clean up on failure
+            if self.use_database_storage:
+                try:
+                    db_manager.delete_file(file_id)
+                except Exception:
+                    pass
+                try:
+                    db_manager.delete_document(doc_id)
+                except Exception:
+                    pass
+            else:
+                try:
+                    if os.path.exists(pdf_path):
+                        import shutil
+                        shutil.rmtree(os.path.join(settings.VECTORS_DIR, doc_id), ignore_errors=True)
+                        os.remove(pdf_path)
+                except Exception:
+                    pass
+                try:
+                    db_manager.delete_document(doc_id)
+                except Exception:
+                    pass
+            raise ValueError(f"Indexing failed: {e}")
+
+        return {
+            "doc_id": doc_id,
+            "filename": filename,
+            "pages": num_pages,
+            "chunks_indexed": n_chunks
         }
     
     def get_document_info(self, doc_id: str) -> dict:
