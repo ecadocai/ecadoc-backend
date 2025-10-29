@@ -120,12 +120,11 @@ class AgentWorkflow:
         self.memory = SimpleMemory()
         self.session_manager = session_manager
         self.context_resolver = context_resolver
-
-        # Use model name from settings so it can be configured via environment variable OPENAI_MODEL
-        self.llm = ChatOpenAI(model=settings.OPENAI_MODEL, temperature=0.0, api_key=settings.OPENAI_API_KEY)
+        
+        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0, api_key=settings.OPENAI_API_KEY)
         self.agent = create_tool_calling_agent(self.llm, ALL_TOOLS, self._create_prompt())
         self.agent_executor = AgentExecutor(agent=self.agent, tools=ALL_TOOLS, verbose=True)
-
+        
         # Initialize LangGraph workflow
         self.workflow = self._create_workflow()
         self.compiled_graph = self.workflow.compile()
@@ -187,7 +186,7 @@ class AgentWorkflow:
 5.  **Agent's Final Response to User**: (The raw JSON string from `generate_frontend_annotations`).
 """),
                 MessagesPlaceholder(variable_name="messages"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
     
     def _create_workflow(self):
@@ -195,55 +194,74 @@ class AgentWorkflow:
         def should_continue(state: FloorPlanState) -> str:
             return "action" if state["messages"][-1].tool_calls else END
 
+        # --- FIX: Replaced the entire call_agent function ---
         def call_agent(state: FloorPlanState):
-            # Use per-session history if available, otherwise fall back to in-memory history
             session_id = state.get("session_id")
             user_id = state.get("user_id")
-            history = ""
+
+            # 1. Get the current user message from the state
+            if not state.get("messages"):
+                return {"messages": [AIMessage(content="I'm sorry, I lost track of the conversation.")]}
+            
+            current_message = state["messages"][-1]
+            # This content is the "simple_instruction" formatted in the endpoint
+            original_message_content = current_message.content
+
+            # 2. Persist the *current* user message (which includes context) to the session history
             if session_id and user_id is not None:
                 try:
-                    history_msgs = self.get_chat_history(session_id, user_id, limit=20)
-                    history = "\n".join([f"{m['role']}: {m['content']}" for m in history_msgs])
+                    self.add_chat_message(session_id, "user", original_message_content, user_id)
+                except Exception as e:
+                    print(f"DEBUG: Error saving user message to session: {e}")
+            else:
+                # Fallback to in-memory memory (for backward compatibility)
+                self.memory.save_context({"input": original_message_content}, {})
+
+            # 3. Load the full chat history *including* the message we just added
+            history_messages = []
+            if session_id and user_id is not None:
+                try:
+                    # Get chat history from DB (reverse to get chronological order)
+                    history_dicts = self.get_chat_history(session_id, user_id, limit=20)
+                    for msg in history_dicts:
+                        if msg['role'] == 'user' or msg['role'] == 'human':
+                            history_messages.append(HumanMessage(content=msg['content']))
+                        elif msg['role'] == 'assistant' or msg['role'] == 'ai':
+                            history_messages.append(AIMessage(content=msg['content']))
                 except Exception as e:
                     print(f"DEBUG: Error loading session history: {e}")
+            
+            if not history_messages:
+                # Ensure at least the current message is in the list if history is empty
+                history_messages = [current_message]
 
-            # Get the user's most recent request
-            original_message = state["messages"][-1].content if state["messages"] else ""
 
-            # Construct a clear prompt with history first, then the current request
-            prompt_template = f"""
-        PREVIOUS CONVERSATION:
-        {history}
+            # 4. Create the state for the agent executor
+            # This state's 'messages' key must be a list of Message objects
+            # for the `MessagesPlaceholder` to work.
+            agent_input_state = state.copy()
+            agent_input_state["messages"] = history_messages
 
-        CURRENT TASK:
-        - PDF Path: {state.get('pdf_path', 'Not set')}
-        - Page Number: {state.get('page_number', 'Not set')}
-        - User Request: {original_message}
+            # 5. Invoke the agent
+            # The agent's prompt already has the system prompt
+            # and will receive the full history via `MessagesPlaceholder`
+            response = self.agent_executor.invoke(agent_input_state)
+            ai_output = response.get("output", "I'm sorry, I encountered an error.")
 
-        IMPORTANT: If this is an annotation request, remember the two-step process:
-        1. Call `detect_floor_plan_objects`.
-        2. Call `generate_frontend_annotations` with the results.
-        The final output must be the JSON from `generate_frontend_annotations`.
-        """
-
-            # Create a new state with the structured prompt
-            state_with_context = {
-                "messages": [HumanMessage(content=prompt_template)]
-            }
-
-            response = self.agent_executor.invoke(state_with_context)
-
-            # Persist assistant output to the session history
+            # 6. Persist assistant output to the session history
             if session_id and user_id is not None:
                 try:
-                    self.add_chat_message(session_id, "assistant", response["output"], user_id)
+                    self.add_chat_message(session_id, "assistant", ai_output, user_id)
                 except Exception as e:
                     print(f"DEBUG: Error saving assistant message to session: {e}")
             else:
-                # Fallback to in-memory memory for backward compatibility
-                self.memory.save_context({"input": original_message}, {"output": response["output"]})
+                # Fallback to in-memory memory
+                self.memory.save_context({}, {"output": ai_output})
 
-            return {"messages": [AIMessage(content=response["output"])]}
+            # 7. Return the new AI message to the graph state
+            return {"messages": [AIMessage(content=ai_output)]}
+        # --- End of FIX ---
+
         workflow = StateGraph(FloorPlanState)
         workflow.add_node("agent", call_agent)
         workflow.add_node("action", ToolNode(ALL_TOOLS))
