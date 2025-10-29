@@ -203,9 +203,6 @@ Please handle this request using the most appropriate tool.
         print(f"DEBUG: Starting unified agent for doc {doc_id} with instruction: {user_instruction}")
         final_state = agent_workflow.process_request(initial_state)
         final_msg = final_state["messages"][-1].content
-        
-        # Save assistant response to chat history
-        session_manager.add_message_to_session(session_id, user_id, "assistant", final_msg)
 
         # Handle the agent's response
         try:
@@ -215,6 +212,10 @@ Please handle this request using the most appropriate tool.
             # Case 1: It's the new annotation format
             if isinstance(parsed_data, dict) and 'annotations' in parsed_data:
                 print("DEBUG: Annotation JSON response detected.")
+                # Save only the message text to history
+                session_manager.add_message_to_session(
+                    session_id, user_id, "assistant", parsed_data.get("message", "Annotations generated successfully.")
+                )
                 response_data = {
                     "response": parsed_data.get("message", "Annotations generated successfully."),
                     "session_id": session_id,
@@ -234,6 +235,10 @@ Please handle this request using the most appropriate tool.
             # Case 2: It's a RAG/informational JSON format
             elif isinstance(parsed_data, dict) and 'answer' in parsed_data:
                 print("DEBUG: RAG JSON response detected.")
+                # Save the answer to history
+                session_manager.add_message_to_session(
+                    session_id, user_id, "assistant", parsed_data.get("answer", "No answer found.")
+                )
                 response_content = {
                     "response": parsed_data.get("answer", "No answer found."),
                     "session_id": session_id,
@@ -286,6 +291,8 @@ Please handle this request using the most appropriate tool.
                 "citations": [],
                 "most_referenced_page": None
             }
+            # Save plain text to history
+            session_manager.add_message_to_session(session_id, user_id, "assistant", answer_text)
             # Try to extract citations embedded in the plain text answer
             try:
                 parsed_citations, parsed_most = parse_citations_from_text(answer_text, doc_id=doc_id)
@@ -460,16 +467,17 @@ Please handle this request using the most appropriate tool.
         final_state = agent_workflow.process_request(initial_state)
         final_msg = final_state["messages"][-1].content
         
-        # Save assistant response
-        session_manager.add_message_to_session(session_id, user_id, "assistant", final_msg)
-        
-        # Handle agent response
+        # Handle agent response and persist concise message
         try:
             parsed_data = json.loads(final_msg)
             
             # Case 1: Annotation JSON
             if isinstance(parsed_data, dict) and 'annotations' in parsed_data:
                 print("DEBUG: Project annotation JSON response detected.")
+                # Save only the message text, not full annotation payload
+                session_manager.add_message_to_session(
+                    session_id, user_id, "assistant", parsed_data.get("message", "Annotations generated successfully.")
+                )
                 response_data = {
                     "response": parsed_data.get("message", "Annotations generated successfully."),
                     "session_id": session_id,
@@ -491,6 +499,10 @@ Please handle this request using the most appropriate tool.
             # Case 2: RAG/informational JSON
             elif isinstance(parsed_data, dict) and 'answer' in parsed_data:
                 print("DEBUG: Project RAG JSON response detected.")
+                # Save the answer text
+                session_manager.add_message_to_session(
+                    session_id, user_id, "assistant", parsed_data.get("answer", "No answer found.")
+                )
                 response_content = {
                     "response": parsed_data.get("answer", "No answer found."),
                     "session_id": session_id,
@@ -545,6 +557,8 @@ Please handle this request using the most appropriate tool.
                 "most_referenced_page": None,
                 "project_context": {"name": project["name"], "description": project["description"]}
             }
+            # Save plain text answer
+            session_manager.add_message_to_session(session_id, user_id, "assistant", answer_text)
             # Try to extract citations embedded in the plain text answer
             try:
                 parsed_citations, parsed_most = parse_citations_from_text(answer_text, doc_id=final_doc_id)

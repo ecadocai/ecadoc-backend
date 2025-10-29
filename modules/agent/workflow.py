@@ -250,13 +250,6 @@ class AgentWorkflow:
                 config={"configurable": {"session_id": session_id}},
             )
 
-            # Persist assistant output to the session history (DB) if available
-            if user_id is not None:
-                try:
-                    self.add_chat_message(session_id, "assistant", response["output"], user_id)
-                except Exception as e:
-                    print(f"DEBUG: Error saving assistant message to session: {e}")
-
             return {"messages": [AIMessage(content=response["output"])]}
         workflow = StateGraph(FloorPlanState)
         workflow.add_node("agent", call_agent)
