@@ -207,10 +207,21 @@ class AgentWorkflow:
             # This content is the "simple_instruction" formatted in the endpoint
             original_message_content = current_message.content
 
-            # 2. Persist the *current* user message (which includes context) to the session history
+            # 2. Persist the current user message to the session history
             if session_id and user_id is not None:
                 try:
-                    self.add_chat_message(session_id, "user", original_message_content, user_id)
+                    # Store a cleaner version of the user message when possible
+                    raw_user_msg = original_message_content
+                    try:
+                        marker = "User Request:"
+                        if marker in original_message_content:
+                            after = original_message_content.split(marker, 1)[1].strip()
+                            parts = after.split("\n\n", 1)
+                            raw_user_msg = parts[0].strip()
+                    except Exception:
+                        pass
+
+                    self.add_chat_message(session_id, "user", raw_user_msg, user_id)
                 except Exception as e:
                     print(f"DEBUG: Error saving user message to session: {e}")
             else:
@@ -225,7 +236,8 @@ class AgentWorkflow:
                     history_limit = getattr(settings, 'CHAT_HISTORY_LIMIT', 20)
                     # Get chat history from DB (chronological order)
                     history_dicts = self.get_chat_history(session_id, user_id, limit=history_limit)
-                    for msg in history_dicts:
+                    # DB returns newest-first; reverse to chronological
+                    for msg in reversed(history_dicts):
                         role = (msg.get('role') or '').lower()
                         content = msg.get('content') or ''
                         if role in ('user', 'human'):
@@ -237,7 +249,46 @@ class AgentWorkflow:
 
             # Always include the current message at the end if missing
             if not history_messages or history_messages[-1].content != original_message_content:
-                history_messages.append(HumanMessage(content=original_message_content))
+                # Use the same cleaned content we persisted to history when available
+                try:
+                    current_human = history_messages[-1] if history_messages else None
+                    cleaned = raw_user_msg if 'raw_user_msg' in locals() else original_message_content
+                    if not current_human or getattr(current_human, 'content', None) != cleaned:
+                        history_messages.append(HumanMessage(content=cleaned))
+                except Exception:
+                    history_messages.append(HumanMessage(content=original_message_content))
+
+            # 3b. Build a concise summary of the last 10 messages and prepend as system context
+            try:
+                summary_count = 10
+                # Use the raw dicts we fetched (if available) to form a summary
+                if session_id and user_id is not None and 'history_dicts' in locals():
+                    to_summarize = list(reversed(history_dicts))[-summary_count:] if history_dicts else []
+                    if to_summarize:
+                        lines = []
+                        for m in to_summarize:
+                            role = (m.get('role') or '').capitalize()
+                            content = (m.get('content') or '').strip()
+                            if content:
+                                # Trim very long lines
+                                snippet = content if len(content) <= 400 else content[:400] + '...'
+                                lines.append(f"{role}: {snippet}")
+                        if lines:
+                            summary_prompt = (
+                                "Summarize the following recent conversation into 4-6 bullet points. "
+                                "Capture user goals, constraints, decisions, and document/page context. "
+                                "Keep it under 120 words, neutral tone.\n\n" + "\n".join(lines)
+                            )
+                            try:
+                                summarizer = ChatOpenAI(model=getattr(settings, 'OPENAI_MODEL', 'gpt-4o-mini'), temperature=0.0, api_key=settings.OPENAI_API_KEY)
+                                summary_resp = summarizer.invoke(summary_prompt)
+                                summary_text = (summary_resp.content or '').strip()
+                                if summary_text:
+                                    history_messages.insert(0, AIMessage(content=f"Conversation summary:\n{summary_text}"))
+                            except Exception as se:
+                                print(f"DEBUG: Conversation summarization failed: {se}")
+            except Exception as e:
+                print(f"DEBUG: Error preparing conversation summary: {e}")
 
 
             # 4. Create the state for the agent executor
