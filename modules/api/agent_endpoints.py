@@ -5,7 +5,7 @@ import os
 import uuid
 import re
 import json
-from fastapi import APIRouter, BackgroundTasks, Form, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import HumanMessage
 
@@ -14,8 +14,10 @@ from modules.config.utils import delete_file_after_delay
 from modules.pdf_processing.service import pdf_processor
 from modules.database import db_manager
 from modules.agent import agent_workflow
+from modules.agent.tools import process_question_with_hybrid_search
 from modules.projects.service import project_service
 from modules.session import session_manager, context_resolver
+from modules.auth.deps import get_current_user_id
 
 def extract_manual_suggestions(text: str) -> list:
     """Extract manually formatted suggestions from the response text."""
@@ -42,6 +44,76 @@ def extract_manual_suggestions(text: str) -> list:
     print(f"DEBUG: Extracted {len(suggestions)} manual suggestions from text")
     return suggestions
 
+
+def parse_citations_from_text(text: str, doc_id: str = None) -> tuple:
+    """Attempt to parse a simple citation block embedded in plain text responses.
+
+    Looks for a section that starts with 'Document citations:' and collects lines
+    that contain page numbers like '[1] Page 3' or 'Page 3'. Returns a tuple of
+    (citations_list, most_referenced_page) where citations_list is a list of
+    dicts with minimal citation info suitable for the endpoint response.
+    """
+    citations = []
+    most_referenced_page = None
+
+    marker_match = re.search(r"document citations:\s*(.*)$", text, re.IGNORECASE | re.DOTALL)
+    if not marker_match:
+        # Fallback: scan for lines that include 'Page <num>' anywhere in the text
+        lines = text.splitlines()
+        page_counts = {}
+        for line in lines:
+            m = re.search(r"page\s*(\d{1,4})", line, re.IGNORECASE)
+            if m:
+                page = int(m.group(1))
+                idx = len(citations) + 1
+                citations.append({
+                    "id": idx,
+                    "page": page,
+                    "text": line.strip()[:500],
+                    "relevance_score": None,
+                    "doc_id": doc_id
+                })
+                page_counts[page] = page_counts.get(page, 0) + 1
+        if page_counts:
+            most_referenced_page = max(page_counts.items(), key=lambda x: x[1])[0]
+        return citations, most_referenced_page
+
+    block = marker_match.group(1)
+    # Only consider the first 20 lines after the marker for speed
+    lines = block.strip().splitlines()[:20]
+    page_counts = {}
+    for i, line in enumerate(lines):
+        # Match patterns like: [1] Page 3, Page 3: some text, 1) Page 3, or just 'Page 3'
+        m = re.search(r"\[?(\d+)\]?\s*[:,\)]?\s*Page\s*(\d{1,4})", line, re.IGNORECASE)
+        if m:
+            try:
+                cit_id = int(m.group(1))
+            except Exception:
+                cit_id = i + 1
+            page = int(m.group(2))
+        else:
+            m2 = re.search(r"Page\s*(\d{1,4})", line, re.IGNORECASE)
+            if m2:
+                cit_id = i + 1
+                page = int(m2.group(1))
+            else:
+                # No page found on this line, skip
+                continue
+
+        citations.append({
+            "id": cit_id,
+            "page": page,
+            "text": line.strip()[:500],
+            "relevance_score": None,
+            "doc_id": doc_id
+        })
+        page_counts[page] = page_counts.get(page, 0) + 1
+
+    if page_counts:
+        most_referenced_page = max(page_counts.items(), key=lambda x: x[1])[0]
+
+    return citations, most_referenced_page
+
 router = APIRouter(prefix="/agent", tags=["agent"])
 
 @router.post("/unified")
@@ -49,7 +121,7 @@ async def unified_agent(
     background_tasks: BackgroundTasks,
     doc_id: str = Form(...),
     user_instruction: str = Form(...),
-    user_id: int = Form(...),
+    user_id: int = Depends(get_current_user_id),
     session_id: str = Form(None)
 ):
     """
@@ -107,9 +179,8 @@ async def unified_agent(
         # Create new session with context
         session_id = session_manager.get_or_create_session(user_id, context_type, context_id)
     
-    # --- FIX ---
-    # REMOVED: session_manager.add_message_to_session(session_id, user_id, "user", user_instruction)
-    # This is now handled inside the workflow's call_agent function.
+    # Add user message to chat history with context
+    session_manager.add_message_to_session(session_id, user_id, "user", user_instruction)
     
     # Simple instruction for the agent - let the workflow handle tool selection
     simple_instruction = f"""
@@ -133,7 +204,8 @@ Please handle this request using the most appropriate tool.
         final_state = agent_workflow.process_request(initial_state)
         final_msg = final_state["messages"][-1].content
         
-        # Assistant response is persisted by the workflow; avoid duplicate logging here
+        # Save assistant response to chat history
+        session_manager.add_message_to_session(session_id, user_id, "assistant", final_msg)
 
         # Handle the agent's response
         try:
@@ -172,6 +244,18 @@ Please handle this request using the most appropriate tool.
                     "citations": parsed_data.get("citations", []),
                     "most_referenced_page": parsed_data.get("most_referenced_page")
                 }
+                # If the agent returned no citations, try to fetch them separately
+                try:
+                    if not response_content["citations"]:
+                        print("DEBUG: No citations found in agent response, attempting to generate citations separately.")
+                        hybrid = process_question_with_hybrid_search(doc_id, user_instruction)
+                        if hybrid and isinstance(hybrid, dict):
+                            response_content["citations"] = hybrid.get("citations", [])
+                            # Only override most_referenced_page if we found one
+                            if hybrid.get("most_referenced_page"):
+                                response_content["most_referenced_page"] = hybrid.get("most_referenced_page")
+                except Exception as e:
+                    print(f"DEBUG: Failed to generate fallback citations: {e}")
                 return JSONResponse(content=response_content)
 
             # Case 3: It's some other JSON, treat as informational
@@ -199,8 +283,17 @@ Please handle this request using the most appropriate tool.
                 "page": page_number,
                 "type": "information",
                 "suggestions": suggestions,
-                "citations": []
+                "citations": [],
+                "most_referenced_page": None
             }
+            # Try to extract citations embedded in the plain text answer
+            try:
+                parsed_citations, parsed_most = parse_citations_from_text(answer_text, doc_id=doc_id)
+                if parsed_citations:
+                    response_content["citations"] = parsed_citations
+                    response_content["most_referenced_page"] = parsed_most
+            except Exception as e:
+                print(f"DEBUG: Failed to parse inline citations: {e}")
             return JSONResponse(content=response_content)
             
     except Exception as e:
@@ -221,7 +314,7 @@ Please handle this request using the most appropriate tool.
                 print(f"DEBUG: Error cleaning up temporary PDF file: {e}")
 
 @router.get("/chat/history")
-async def get_chat_history(user_id: int, session_id: str = None, limit: int = 50):
+async def get_chat_history(user_id: int = Depends(get_current_user_id), session_id: str = None, limit: int = 50):
     """
     Retrieve chat history for a specific user.
     If session_id is provided, returns only that session's history.
@@ -247,7 +340,7 @@ async def get_chat_history(user_id: int, session_id: str = None, limit: int = 50
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.get("/chat/sessions")
-async def get_user_sessions(user_id: int):
+async def get_user_sessions(user_id: int = Depends(get_current_user_id)):
     """
     Get all unique session IDs for a user.
     """
@@ -263,7 +356,7 @@ async def unified_agent_for_project(
     background_tasks: BackgroundTasks,
     project_id: str,
     user_instruction: str = Form(...),
-    user_id: int = Form(...),
+    user_id: int = Depends(get_current_user_id),
     session_id: str = Form(None),
     doc_id: str = Form(None)
 ):
@@ -337,9 +430,8 @@ async def unified_agent_for_project(
     else:
         session_id = session_manager.get_or_create_session(user_id, context_type, context_id)
     
-    # --- FIX ---
-    # REMOVED: session_manager.add_message_to_session(session_id, user_id, "user", user_instruction)
-    # This is now handled inside the workflow's call_agent function.
+    # Add message to history
+    session_manager.add_message_to_session(session_id, user_id, "user", user_instruction)
     
     # Prepare agent instruction
     simple_instruction = f"""
@@ -368,7 +460,8 @@ Please handle this request using the most appropriate tool.
         final_state = agent_workflow.process_request(initial_state)
         final_msg = final_state["messages"][-1].content
         
-        # Assistant response is persisted by the workflow; avoid duplicate logging here
+        # Save assistant response
+        session_manager.add_message_to_session(session_id, user_id, "assistant", final_msg)
         
         # Handle agent response
         try:
@@ -410,6 +503,17 @@ Please handle this request using the most appropriate tool.
                     "most_referenced_page": parsed_data.get("most_referenced_page"),
                     "project_context": {"name": project["name"], "description": project["description"]}
                 }
+                # If the agent returned no citations, attempt to fetch them separately
+                try:
+                    if not response_content["citations"]:
+                        print("DEBUG: No citations found in project agent response, attempting to generate citations separately.")
+                        hybrid = process_question_with_hybrid_search(final_doc_id, user_instruction)
+                        if hybrid and isinstance(hybrid, dict):
+                            response_content["citations"] = hybrid.get("citations", [])
+                            if hybrid.get("most_referenced_page"):
+                                response_content["most_referenced_page"] = hybrid.get("most_referenced_page")
+                except Exception as e:
+                    print(f"DEBUG: Failed to generate fallback project citations: {e}")
                 return JSONResponse(content=response_content)
             
             else:
@@ -438,8 +542,17 @@ Please handle this request using the most appropriate tool.
                 "type": "information",
                 "suggestions": suggestions,
                 "citations": [],
+                "most_referenced_page": None,
                 "project_context": {"name": project["name"], "description": project["description"]}
             }
+            # Try to extract citations embedded in the plain text answer
+            try:
+                parsed_citations, parsed_most = parse_citations_from_text(answer_text, doc_id=final_doc_id)
+                if parsed_citations:
+                    response_content["citations"] = parsed_citations
+                    response_content["most_referenced_page"] = parsed_most
+            except Exception as e:
+                print(f"DEBUG: Failed to parse inline citations in project response: {e}")
             return JSONResponse(content=response_content)
             
     except Exception as e:
