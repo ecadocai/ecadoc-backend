@@ -133,8 +133,7 @@ Please handle this request using the most appropriate tool.
         final_state = agent_workflow.process_request(initial_state)
         final_msg = final_state["messages"][-1].content
         
-        # Save assistant response to chat history
-        session_manager.add_message_to_session(session_id, user_id, "assistant", final_msg)
+        # Assistant response is persisted by the workflow; avoid duplicate logging here
 
         # Handle the agent's response
         try:
@@ -369,8 +368,7 @@ Please handle this request using the most appropriate tool.
         final_state = agent_workflow.process_request(initial_state)
         final_msg = final_state["messages"][-1].content
         
-        # Save assistant response
-        session_manager.add_message_to_session(session_id, user_id, "assistant", final_msg)
+        # Assistant response is persisted by the workflow; avoid duplicate logging here
         
         # Handle agent response
         try:

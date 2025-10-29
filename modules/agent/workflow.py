@@ -121,7 +121,7 @@ class AgentWorkflow:
         self.session_manager = session_manager
         self.context_resolver = context_resolver
         
-        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0, api_key=settings.OPENAI_API_KEY)
+        self.llm = ChatOpenAI(model=settings.OPENAI_MODEL, temperature=0.0, api_key=settings.OPENAI_API_KEY)
         self.agent = create_tool_calling_agent(self.llm, ALL_TOOLS, self._create_prompt())
         self.agent_executor = AgentExecutor(agent=self.agent, tools=ALL_TOOLS, verbose=True)
         
@@ -217,23 +217,27 @@ class AgentWorkflow:
                 # Fallback to in-memory memory (for backward compatibility)
                 self.memory.save_context({"input": original_message_content}, {})
 
-            # 3. Load the full chat history *including* the message we just added
+            # 3. Load the full chat history and ensure current message is present
             history_messages = []
             if session_id and user_id is not None:
                 try:
-                    # Get chat history from DB (reverse to get chronological order)
-                    history_dicts = self.get_chat_history(session_id, user_id, limit=20)
+                    # Use configured history limit
+                    history_limit = getattr(settings, 'CHAT_HISTORY_LIMIT', 20)
+                    # Get chat history from DB (chronological order)
+                    history_dicts = self.get_chat_history(session_id, user_id, limit=history_limit)
                     for msg in history_dicts:
-                        if msg['role'] == 'user' or msg['role'] == 'human':
-                            history_messages.append(HumanMessage(content=msg['content']))
-                        elif msg['role'] == 'assistant' or msg['role'] == 'ai':
-                            history_messages.append(AIMessage(content=msg['content']))
+                        role = (msg.get('role') or '').lower()
+                        content = msg.get('content') or ''
+                        if role in ('user', 'human'):
+                            history_messages.append(HumanMessage(content=content))
+                        elif role in ('assistant', 'ai'):
+                            history_messages.append(AIMessage(content=content))
                 except Exception as e:
                     print(f"DEBUG: Error loading session history: {e}")
-            
-            if not history_messages:
-                # Ensure at least the current message is in the list if history is empty
-                history_messages = [current_message]
+
+            # Always include the current message at the end if missing
+            if not history_messages or history_messages[-1].content != original_message_content:
+                history_messages.append(HumanMessage(content=original_message_content))
 
 
             # 4. Create the state for the agent executor
