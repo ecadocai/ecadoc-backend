@@ -9,6 +9,9 @@ from dataclasses import dataclass, field
 
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_core.chat_history import BaseChatMessageHistory
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 from langgraph.graph import MessagesState
@@ -90,6 +93,20 @@ class SimpleMemory:
         self.chat_memory.clear()
 
 # ==============================
+# LangChain Memory Store (per-session)
+# ==============================
+
+# This dictionary acts as an in-memory store for chat histories,
+# keyed by a session_id. It enables RunnableWithMessageHistory to
+# maintain per-session context across invocations.
+_memory_store: Dict[str, ChatMessageHistory] = {}
+
+def _get_session_history(session_id: str) -> BaseChatMessageHistory:
+    if session_id not in _memory_store:
+        _memory_store[session_id] = ChatMessageHistory()
+    return _memory_store[session_id]
+
+# ==============================
 # Enhanced Session Management
 # ==============================
 
@@ -125,6 +142,14 @@ class AgentWorkflow:
         self.llm = ChatOpenAI(model=settings.OPENAI_MODEL, temperature=0.0, api_key=settings.OPENAI_API_KEY)
         self.agent = create_tool_calling_agent(self.llm, ALL_TOOLS, self._create_prompt())
         self.agent_executor = AgentExecutor(agent=self.agent, tools=ALL_TOOLS, verbose=True)
+
+        # Wrap with per-session message history
+        self.agent_executor_w_memory = RunnableWithMessageHistory(
+            self.agent_executor,
+            _get_session_history,
+            input_messages_key="messages",
+            history_messages_key="history",
+        )
 
         # Initialize LangGraph workflow
         self.workflow = self._create_workflow()
@@ -186,7 +211,8 @@ class AgentWorkflow:
 4.  **Agent**: Calls `generate_frontend_annotations` with the JSON from step 3, `page_number=2`, `annotation_type='highlight'`, and `filter_condition='door'`.
 5.  **Agent's Final Response to User**: (The raw JSON string from `generate_frontend_annotations`).
 """),
-                MessagesPlaceholder(variable_name="messages"),
+            MessagesPlaceholder(variable_name="history"),
+            MessagesPlaceholder(variable_name="messages"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
     
@@ -196,52 +222,40 @@ class AgentWorkflow:
             return "action" if state["messages"][-1].tool_calls else END
 
         def call_agent(state: FloorPlanState):
-            # Use per-session history if available, otherwise fall back to in-memory history
-            session_id = state.get("session_id")
+            # Session info for memory scoping
+            session_id = state.get("session_id") or "default"
             user_id = state.get("user_id")
-            history = ""
-            if session_id and user_id is not None:
-                try:
-                    history_msgs = self.get_chat_history(session_id, user_id, limit=20)
-                    history = "\n".join([f"{m['role']}: {m['content']}" for m in history_msgs])
-                except Exception as e:
-                    print(f"DEBUG: Error loading session history: {e}")
 
-            # Get the user's most recent request
-            original_message = state["messages"][-1].content if state["messages"] else ""
+            # Get the user's most recent request and build the current-turn message
+            original_message = state["messages"][-1].content if state.get("messages") else ""
+            current_turn = (
+                f"CURRENT TASK:\n"
+                f"- PDF Path: {state.get('pdf_path', 'Not set')}\n"
+                f"- Page Number: {state.get('page_number', 'Not set')}\n"
+                f"- User Request: {original_message}\n\n"
+                f"IMPORTANT: If this is an annotation request, remember the two-step process:\n"
+                f"1. Call `detect_floor_plan_objects`.\n"
+                f"2. Call `generate_frontend_annotations` with the results.\n"
+                f"The final output must be the JSON from `generate_frontend_annotations`."
+            )
 
-            # Construct a clear prompt with history first, then the current request
-            prompt_template = f"""
-        PREVIOUS CONVERSATION:
-        {history}
-
-        CURRENT TASK:
-        - PDF Path: {state.get('pdf_path', 'Not set')}
-        - Page Number: {state.get('page_number', 'Not set')}
-        - User Request: {original_message}
-
-        IMPORTANT: If this is an annotation request, remember the two-step process:
-        1. Call `detect_floor_plan_objects`.
-        2. Call `generate_frontend_annotations` with the results.
-        The final output must be the JSON from `generate_frontend_annotations`.
-        """
-
-            # Create a new state with the structured prompt
+            # Prepare input for the agent; history is injected automatically by RunnableWithMessageHistory
             state_with_context = {
-                "messages": [HumanMessage(content=prompt_template)]
+                "messages": [HumanMessage(content=current_turn)]
             }
 
-            response = self.agent_executor.invoke(state_with_context)
+            # Invoke with session-scoped memory
+            response = self.agent_executor_w_memory.invoke(
+                state_with_context,
+                config={"configurable": {"session_id": session_id}},
+            )
 
-            # Persist assistant output to the session history
-            if session_id and user_id is not None:
+            # Persist assistant output to the session history (DB) if available
+            if user_id is not None:
                 try:
                     self.add_chat_message(session_id, "assistant", response["output"], user_id)
                 except Exception as e:
                     print(f"DEBUG: Error saving assistant message to session: {e}")
-            else:
-                # Fallback to in-memory memory for backward compatibility
-                self.memory.save_context({"input": original_message}, {"output": response["output"]})
 
             return {"messages": [AIMessage(content=response["output"])]}
         workflow = StateGraph(FloorPlanState)
