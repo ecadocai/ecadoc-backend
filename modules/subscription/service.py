@@ -48,19 +48,10 @@ class SubscriptionService:
         if not interval:
             raise HTTPException(status_code=400, detail="Billing interval is required")
 
-        normalized = interval.strip().lower()
-        valid_values = {
-            SubscriptionInterval.QUARTERLY.value: SubscriptionInterval.QUARTERLY.value,
-            SubscriptionInterval.ANNUAL.value: SubscriptionInterval.ANNUAL.value,
-            "month": SubscriptionInterval.QUARTERLY.value,
-            "monthly": SubscriptionInterval.QUARTERLY.value,
-            "quarter": SubscriptionInterval.QUARTERLY.value,
-        }
-
-        if normalized not in valid_values:
-            raise HTTPException(status_code=400, detail="Invalid billing interval")
-
-        return valid_values[normalized]
+        try:
+            return SubscriptionInterval.normalize(interval).value
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @staticmethod
     def _from_stripe_interval(interval: Optional[str], interval_count: Optional[int] = None) -> Optional[str]:
@@ -69,19 +60,13 @@ class SubscriptionService:
         if interval is None:
             return None
 
-        if interval == 'month':
-            if interval_count == 3:
-                return SubscriptionInterval.QUARTERLY.value
-            if interval_count == 1:
-                return SubscriptionInterval.QUARTERLY.value  # Legacy monthly treated as quarterly
+        if interval == "month" and interval_count == 6:
+            return SubscriptionInterval.SIX_MONTH.value
 
-        if interval == 'year':
+        if interval == "year" or (interval == "month" and interval_count == 12):
             return SubscriptionInterval.ANNUAL.value
 
-        if interval in {'quarter', 'quarterly'}:
-            return SubscriptionInterval.QUARTERLY.value
-
-        return interval
+        return None
     
     def get_available_plans(self) -> Dict[str, Any]:
         """Get all available subscription plans"""
@@ -162,24 +147,34 @@ class SubscriptionService:
             normalized_interval = self._normalize_interval(interval)
 
             # Determine price based on interval
+            plan_price = self.db.get_plan_price_option(plan_id, normalized_interval)
+            if not plan_price:
+                raise HTTPException(status_code=400, detail="Selected plan interval is not available")
+
+            if plan_price.price <= 0 and not plan_price.stripe_price_id:
+                raise HTTPException(status_code=400, detail="Plan pricing must be configured before checkout")
+
             if normalized_interval == SubscriptionInterval.ANNUAL.value:
-                price_amount = int(plan.price_annual * 100)  # Convert to cents
                 stripe_interval = "year"
                 interval_count = 1
                 interval_display = "annual"
             else:
-                price_amount = int(plan.price_quarterly * 100)
                 stripe_interval = "month"
-                interval_count = 3
-                interval_display = "quarterly"
+                interval_count = 6
+                interval_display = "6-month"
 
-            # Create Stripe checkout session
-            checkout_session = stripe.checkout.Session.create(
-                customer_email=user.email,
-                payment_method_types=['card'],
-                line_items=[{
+            currency = (plan_price.currency or "usd").lower()
+
+            if plan_price.stripe_price_id:
+                line_items = [{
+                    'price': plan_price.stripe_price_id,
+                    'quantity': 1,
+                }]
+            else:
+                price_amount = int(plan_price.price * 100)
+                line_items = [{
                     'price_data': {
-                        'currency': 'usd',
+                        'currency': currency,
                         'product_data': {
                             'name': plan.name,
                             'description': plan.description,
@@ -191,7 +186,13 @@ class SubscriptionService:
                         },
                     },
                     'quantity': 1,
-                }],
+                }]
+
+            # Create Stripe checkout session
+            checkout_session = stripe.checkout.Session.create(
+                customer_email=user.email,
+                payment_method_types=['card'],
+                line_items=line_items,
                 mode='subscription',
                 success_url=f"{settings.FRONTEND_URL}/subscription/success?session_id={{CHECKOUT_SESSION_ID}}",
                 cancel_url=f"{settings.FRONTEND_URL}/subscription/cancel",
