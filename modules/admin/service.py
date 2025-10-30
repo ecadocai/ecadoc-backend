@@ -117,6 +117,16 @@ class AdminService:
                             plan_features = json.loads(plan_features)
                         except json.JSONDecodeError:
                             pass
+                    plan_prices = [
+                        {
+                            "duration_months": price.duration_months,
+                            "price": price.price,
+                            "currency": price.currency,
+                            "stripe_price_id": price.stripe_price_id,
+                        }
+                        for price in (plan.prices or [])
+                    ] if plan else None
+
                     subscription_info = {
                         "id": subscription.id,
                         "status": subscription.status,
@@ -127,12 +137,11 @@ class AdminService:
                         "plan": {
                             "id": plan.id if plan else None,
                             "name": plan.name if plan else None,
-                            "price_quarterly": plan.price_quarterly if plan else None,
-                            "price_annual": plan.price_annual if plan else None,
                             "storage_gb": plan.storage_gb if plan else None,
                             "project_limit": plan.project_limit if plan else None,
                             "action_limit": plan.action_limit if plan else None,
                             "features": plan_features,
+                            "prices": plan_prices,
                         } if plan else None,
                     }
 
@@ -218,7 +227,7 @@ class AdminService:
         self,
         user_id: int,
         plan_id: int,
-        interval: SubscriptionInterval = SubscriptionInterval.QUARTERLY,
+        interval: SubscriptionInterval = SubscriptionInterval.SIX_MONTH,
     ) -> Dict[str, Any]:
         """Switch a user's subscription plan without payment processing."""
 
@@ -231,13 +240,16 @@ class AdminService:
             if not plan:
                 raise HTTPException(status_code=404, detail="Subscription plan not found")
 
-            normalized_interval = interval.value if isinstance(interval, SubscriptionInterval) else SubscriptionInterval(interval).value
+            if isinstance(interval, SubscriptionInterval):
+                normalized_interval = interval.value
+            else:
+                normalized_interval = SubscriptionInterval.normalize(interval).value
 
             now = datetime.utcnow()
             if normalized_interval == SubscriptionInterval.ANNUAL.value:
                 period_end = now + timedelta(days=365)
             else:
-                period_end = now + timedelta(days=90)
+                period_end = now + timedelta(days=182)
 
             existing_subscription = self.db.get_user_subscription(user_id)
 
@@ -296,9 +308,16 @@ class AdminService:
                 "plan": {
                     "id": plan.id,
                     "name": plan.name,
-                    "price_quarterly": plan.price_quarterly,
-                    "price_annual": plan.price_annual,
                     "features": plan_features,
+                    "prices": [
+                        {
+                            "duration_months": price.duration_months,
+                            "price": price.price,
+                            "currency": price.currency,
+                            "stripe_price_id": price.stripe_price_id,
+                        }
+                        for price in (plan.prices or [])
+                    ],
                 },
                 "subscription": updated_subscription,
             }
@@ -437,33 +456,79 @@ class AdminService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error fetching subscription plans: {str(e)}")
     
-    def create_subscription_plan(self, name: str, description: str, price_quarterly: float,
-                               price_annual: float, storage_gb: int, project_limit: int,
-                               user_limit: int, action_limit: int, features: List[str],
-                               has_free_trial: bool, trial_days: int) -> Dict[str, Any]:
+    def create_subscription_plan(
+        self,
+        name: str,
+        description: str,
+        storage_gb: int,
+        project_limit: int,
+        user_limit: int,
+        action_limit: int,
+        features: List[str],
+        has_free_trial: bool,
+        trial_days: int,
+        six_month_price: float,
+        annual_price: float,
+        six_month_stripe_price_id: Optional[str] = None,
+        annual_stripe_price_id: Optional[str] = None,
+        currency: str = "usd",
+    ) -> Dict[str, Any]:
         """Create a new subscription plan"""
-        
+
         try:
+            prices = [
+                {
+                    "duration_months": SubscriptionInterval.SIX_MONTH.duration_months,
+                    "price": six_month_price,
+                    "currency": currency,
+                    "stripe_price_id": six_month_stripe_price_id,
+                },
+                {
+                    "duration_months": SubscriptionInterval.ANNUAL.duration_months,
+                    "price": annual_price,
+                    "currency": currency,
+                    "stripe_price_id": annual_stripe_price_id,
+                },
+            ]
+
             plan_id = self.db.create_subscription_plan(
-                name, description, price_quarterly, price_annual, storage_gb,
-                project_limit, user_limit, action_limit, features,
-                has_free_trial, trial_days
+                name,
+                description,
+                storage_gb,
+                project_limit,
+                user_limit,
+                action_limit,
+                features,
+                has_free_trial,
+                trial_days,
+                prices,
             )
-            
+
             return {
                 "message": "Subscription plan created successfully",
                 "plan_id": plan_id,
-                "name": name
+                "name": name,
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error creating subscription plan: {str(e)}")
 
-    def update_subscription_plan(self, plan_id: int, name: Optional[str] = None,
-                           description: Optional[str] = None, price_quarterly: Optional[float] = None,
-                           price_annual: Optional[float] = None, storage_gb: Optional[int] = None,
-                           project_limit: Optional[int] = None, user_limit: Optional[int] = None,
-                           action_limit: Optional[int] = None, features: Optional[List[str]] = None,
-                           is_active: Optional[bool] = None) -> Dict[str, Any]:
+    def update_subscription_plan(
+        self,
+        plan_id: int,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        storage_gb: Optional[int] = None,
+        project_limit: Optional[int] = None,
+        user_limit: Optional[int] = None,
+        action_limit: Optional[int] = None,
+        features: Optional[List[str]] = None,
+        is_active: Optional[bool] = None,
+        six_month_price: Optional[float] = None,
+        annual_price: Optional[float] = None,
+        six_month_stripe_price_id: Optional[str] = None,
+        annual_stripe_price_id: Optional[str] = None,
+        currency: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Update a subscription plan with partial data"""
         try:
             # Check if plan exists before update
@@ -477,10 +542,6 @@ class AdminService:
                 update_data['name'] = name
             if description is not None:
                 update_data['description'] = description
-            if price_quarterly is not None:
-                update_data['price_quarterly'] = price_quarterly
-            if price_annual is not None:
-                update_data['price_annual'] = price_annual
             if storage_gb is not None:
                 update_data['storage_gb'] = storage_gb
             if project_limit is not None:
@@ -494,9 +555,44 @@ class AdminService:
             if is_active is not None:
                 update_data['is_active'] = is_active
 
+            prices = []
+            existing_prices = {price.duration_months: price for price in (existing_plan.prices or [])}
+
+            if six_month_price is not None or six_month_stripe_price_id is not None:
+                six_month_existing = existing_prices.get(SubscriptionInterval.SIX_MONTH.duration_months)
+                prices.append({
+                    "duration_months": SubscriptionInterval.SIX_MONTH.duration_months,
+                    "price": six_month_price if six_month_price is not None else (six_month_existing.price if six_month_existing else 0.0),
+                    "currency": (currency or (six_month_existing.currency if six_month_existing else "usd")),
+                    "stripe_price_id": six_month_stripe_price_id if six_month_stripe_price_id is not None else (six_month_existing.stripe_price_id if six_month_existing else None),
+                })
+
+            if annual_price is not None or annual_stripe_price_id is not None:
+                annual_existing = existing_prices.get(SubscriptionInterval.ANNUAL.duration_months)
+                prices.append({
+                    "duration_months": SubscriptionInterval.ANNUAL.duration_months,
+                    "price": annual_price if annual_price is not None else (annual_existing.price if annual_existing else 0.0),
+                    "currency": (currency or (annual_existing.currency if annual_existing else "usd")),
+                    "stripe_price_id": annual_stripe_price_id if annual_stripe_price_id is not None else (annual_existing.stripe_price_id if annual_existing else None),
+                })
+
+            if prices:
+                update_data['prices'] = prices
+            elif currency is not None:
+                # Apply currency change to existing prices
+                update_data['prices'] = [
+                    {
+                        "duration_months": price.duration_months,
+                        "price": price.price,
+                        "currency": currency,
+                        "stripe_price_id": price.stripe_price_id,
+                    }
+                    for price in existing_plan.prices or []
+                ]
+
             # Perform the update
             success = self.db.update_subscription_plan(plan_id, **update_data)
-            
+
             if not success:
                 raise HTTPException(status_code=500, detail="Failed to update subscription plan")
 
@@ -676,7 +772,18 @@ class AdminService:
                 status_code=500,
                 detail="Unable to fetch dashboard statistics"
             )
-    
+
+    def get_dashboard_metrics(self, days: int = 14) -> Dict[str, Any]:
+        """Get time-series metrics for the admin dashboard graph."""
+
+        try:
+            return self.db.get_dashboard_metrics(days)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Unable to fetch dashboard metrics: {str(e)}",
+            )
+
     def get_subscription_reminders(self) -> Dict[str, Any]:
         """Get users who need subscription reminders"""
         try:

@@ -6,6 +6,7 @@ import secrets
 from typing import Dict, Any
 from fastapi import HTTPException, UploadFile
 from datetime import datetime
+from urllib.parse import urlparse
 
 from modules.config.settings import settings
 from modules.database import db_manager
@@ -25,9 +26,22 @@ class ProfileService:
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
             
+            image_value = getattr(user, "profile_image", None)
+            if image_value and not isinstance(image_value, str):
+                image_value = str(image_value)
+
+            if image_value:
+                if image_value.startswith("http"):
+                    profile_image_url = image_value
+                else:
+                    generated = self.aws_client.get_file_url(image_value)
+                    profile_image_url = generated or image_value
+            else:
+                profile_image_url = None
+
             user_storage = self.db.get_user_storage(user_id)
             user_subscription = self.db.get_user_subscription(user_id)
-            
+
             return {
                 "user": {
                     "id": user.id,
@@ -35,7 +49,7 @@ class ProfileService:
                     "lastname": user.lastname,
                     "email": user.email,
                     "is_verified": user.is_verified,
-                    "profile_image": user.profile_image,
+                    "profile_image": profile_image_url,
                     "created_at": user.created_at
                 },
                 "storage": {
@@ -111,13 +125,13 @@ class ProfileService:
                 image_url = self.aws_client.get_file_url(s3_key)
             else:
                 success, image_url = self._save_image_locally(user_id, image, unique_filename)
-            
+
             if not success:
                 raise HTTPException(status_code=500, detail="Image upload failed")
-            
-            # Update user profile with image URL
-            self.db.update_user_profile(user_id, profile_image=image_url)
-            
+
+            stored_value = s3_key if self.aws_client.s3_client and image_url else image_url
+            self.db.update_user_profile(user_id, profile_image=stored_value)
+
             return {
                 "message": "Profile image uploaded successfully",
                 "image_url": image_url,
@@ -135,18 +149,25 @@ class ProfileService:
             if not user or not user.profile_image:
                 raise HTTPException(status_code=404, detail="No profile image found")
             
-            # Delete from storage
-            if "amazonaws.com" in user.profile_image:
-                # Extract S3 key
-                file_key = user.profile_image.split("/")[-1]
-                file_key = f"profile_images/{file_key}"
-                self.aws_client.delete_file(file_key)
+            stored_value = user.profile_image
+            s3_key = None
+
+            if stored_value:
+                if not stored_value.startswith("http"):
+                    s3_key = stored_value
+                else:
+                    parsed = urlparse(stored_value)
+                    path = parsed.path.lstrip("/") if parsed.path else ""
+                    if path:
+                        s3_key = path
+
+            if s3_key and self.aws_client.s3_client:
+                self.aws_client.delete_file(s3_key)
             else:
-                # Delete local file
-                file_path = user.profile_image.replace(settings.BASE_URL, "").lstrip("/")
+                file_path = stored_value.replace(settings.BASE_URL or "", "").lstrip("/")
                 if os.path.exists(file_path):
                     os.remove(file_path)
-            
+
             # Update user profile
             self.db.update_user_profile(user_id, profile_image=None)
             

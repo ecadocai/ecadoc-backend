@@ -13,7 +13,7 @@ import json
 import uuid
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from modules.config.settings import settings
 
@@ -23,8 +23,48 @@ class UserStatus(str, Enum):
     SUSPENDED = "suspended"
 
 class SubscriptionInterval(str, Enum):
-    QUARTERLY = "quarterly"
+    """Supported subscription billing intervals."""
+
+    SIX_MONTH = "six_month"
     ANNUAL = "annual"
+
+    @classmethod
+    def normalize(cls, raw: str) -> "SubscriptionInterval":
+        if not raw:
+            raise ValueError("Interval is required")
+
+        value = raw.strip().lower()
+        mapping = {
+            "6": cls.SIX_MONTH,
+            "6m": cls.SIX_MONTH,
+            "6-month": cls.SIX_MONTH,
+            "six_month": cls.SIX_MONTH,
+            "six-month": cls.SIX_MONTH,
+            "semiannual": cls.SIX_MONTH,
+            "semi-annual": cls.SIX_MONTH,
+            "half-year": cls.SIX_MONTH,
+            "half_year": cls.SIX_MONTH,
+            "halfyear": cls.SIX_MONTH,
+            "sixmonth": cls.SIX_MONTH,
+            "biannual": cls.SIX_MONTH,
+            "bi-annual": cls.SIX_MONTH,
+            "annual": cls.ANNUAL,
+            "1-year": cls.ANNUAL,
+            "year": cls.ANNUAL,
+            "yearly": cls.ANNUAL,
+            "12": cls.ANNUAL,
+            "12m": cls.ANNUAL,
+            "12-month": cls.ANNUAL,
+        }
+
+        normalized = mapping.get(value)
+        if not normalized:
+            raise ValueError(f"Unsupported interval: {raw}")
+        return normalized
+
+    @property
+    def duration_months(self) -> int:
+        return 6 if self is SubscriptionInterval.SIX_MONTH else 12
 
 class FeedbackType(str, Enum):
     POSITIVE = "positive"
@@ -60,13 +100,29 @@ class AdminUser:
     last_login: Optional[datetime] = None
 
 @dataclass
+class SubscriptionPlanPrice:
+    """Normalized price option for a subscription plan."""
+
+    id: Optional[int] = None
+    plan_id: Optional[int] = None
+    duration_months: int = 0
+    price: float = 0.0
+    currency: str = "usd"
+    stripe_price_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    @property
+    def interval(self) -> SubscriptionInterval:
+        return SubscriptionInterval.SIX_MONTH if self.duration_months == 6 else SubscriptionInterval.ANNUAL
+
+
+@dataclass
 class SubscriptionPlan:
     """Subscription plan data model"""
+
     id: Optional[int] = None
     name: str = ""
     description: str = ""
-    price_quarterly: float = 0.0
-    price_annual: float = 0.0
     storage_gb: int = 0
     project_limit: int = 0
     user_limit: int = 1
@@ -76,6 +132,7 @@ class SubscriptionPlan:
     has_free_trial: bool = False
     trial_days: int = 0
     created_at: Optional[datetime] = None
+    prices: List[SubscriptionPlanPrice] = None
 
 @dataclass
 class UserSubscription:
@@ -88,7 +145,7 @@ class UserSubscription:
     current_period_start: Optional[datetime] = None
     current_period_end: Optional[datetime] = None
     status: str = "active"
-    interval: str = "quarterly"
+    interval: str = SubscriptionInterval.SIX_MONTH.value
     auto_renew: bool = True
     is_active: bool = True
     created_at: Optional[datetime] = None
@@ -822,8 +879,6 @@ class DatabaseManager:
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     name VARCHAR(255) UNIQUE NOT NULL,
                     description TEXT,
-                    price_quarterly DECIMAL(10,2) DEFAULT 0.00,
-                    price_annual DECIMAL(10,2) DEFAULT 0.00,
                     storage_gb INT DEFAULT 0,
                     project_limit INT DEFAULT 0,
                     user_limit INT DEFAULT 1,
@@ -837,7 +892,22 @@ class DatabaseManager:
                     INDEX idx_is_active (is_active)
                 ) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """)
-            
+
+            # Create subscription_plan_prices table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_plan_prices (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    plan_id INT NOT NULL,
+                    duration_months INT NOT NULL,
+                    price DECIMAL(10,2) NOT NULL,
+                    currency VARCHAR(10) DEFAULT 'usd',
+                    stripe_price_id VARCHAR(255),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_plan_duration (plan_id, duration_months),
+                    FOREIGN KEY (plan_id) REFERENCES subscription_plans (id) ON DELETE CASCADE
+                ) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+
             # Create user_subscriptions table - FIXED: interval is a reserved word, using backticks
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_subscriptions (
@@ -849,7 +919,7 @@ class DatabaseManager:
                     current_period_start TIMESTAMP,
                     current_period_end TIMESTAMP,
                     status VARCHAR(50) DEFAULT 'active',
-                    `interval` VARCHAR(20) DEFAULT 'quarterly',
+                    `interval` VARCHAR(20) DEFAULT 'six_month',
                     auto_renew BOOLEAN DEFAULT TRUE,
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1128,59 +1198,67 @@ class DatabaseManager:
                 {
                     "name": "Solo Plan",
                     "description": "Project Repository & Document Upload (up to 3 active projects, 15GB storage)",
-                    "price_quarterly": 0.0,
-                    "price_annual": 99.0,
+                    "six_month_price": 0.0,
+                    "annual_price": 99.0,
                     "storage_gb": 15,
                     "project_limit": 3,
                     "user_limit": 1,
                     "action_limit": 350,
-                    "features": json.dumps([
+                    "features": [
                         "Version Control for document updates",
                         "Natural Language AI Chat (multi-turn chat, source citations)",
                         "Embedded PDF Viewer",
                         "Manual annotation Tools",
                         "Limited AI-Driven Markup/measurements (350 action limit per month)",
                         "Standard Email Support",
-                        "Full Bluebeam Studio Sync"
-                    ]),
+                        "Full Bluebeam Studio Sync",
+                    ],
                     "has_free_trial": True,
-                    "trial_days": 30
+                    "trial_days": 30,
                 },
                 {
-                    "name": "Team Plan", 
+                    "name": "Team Plan",
                     "description": "Team Collaboration (shared project folders, concurrent editing)",
-                    "price_quarterly": 49.0,
-                    "price_annual": 499.0,
+                    "six_month_price": 98.0,
+                    "annual_price": 499.0,
                     "storage_gb": 50,
                     "project_limit": 10,
                     "user_limit": 5,
                     "action_limit": 2000,
-                    "features": json.dumps([
+                    "features": [
                         "Everything in Solo Plan",
                         "Team Collaboration (shared project folders, concurrent editing)",
                         "Expanded Storage (50GB)",
                         "Increased AI-Driven mark-ups/Measurement(2000 action limit per month)",
                         "Bluebeam Studio Export (push AI-marked PDFs)",
                         "Priority Email + Chat Support",
-                        "Project History Retention: up to 10 versions per project"
-                    ]),
+                        "Project History Retention: up to 10 versions per project",
+                    ],
                     "has_free_trial": False,
-                    "trial_days": 0
-                }
+                    "trial_days": 0,
+                },
             ]
-            
+
             for plan in default_plans:
-                cur.execute("SELECT * FROM subscription_plans WHERE name = %s", (plan["name"],))
-                if not cur.fetchone():
-                    cur.execute("""
-                        INSERT INTO subscription_plans
-                        (name, description, price_quarterly, price_annual, storage_gb, project_limit, user_limit, action_limit, features, has_free_trial, trial_days)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        plan["name"], plan["description"], plan["price_quarterly"], plan["price_annual"],
-                        plan["storage_gb"], plan["project_limit"], plan["user_limit"], plan["action_limit"],
-                        plan["features"], plan["has_free_trial"], plan["trial_days"]
-                    ))
+                cur.execute("SELECT id FROM subscription_plans WHERE name = %s", (plan["name"],))
+                exists = cur.fetchone()
+                if not exists:
+                    plan_id = self.create_subscription_plan(
+                        plan["name"],
+                        plan["description"],
+                        plan["storage_gb"],
+                        plan["project_limit"],
+                        plan["user_limit"],
+                        plan["action_limit"],
+                        plan["features"],
+                        plan["has_free_trial"],
+                        plan["trial_days"],
+                        [
+                            {"duration_months": 6, "price": plan["six_month_price"], "currency": "usd"},
+                            {"duration_months": 12, "price": plan["annual_price"], "currency": "usd"},
+                        ],
+                    )
+                    print(f"✓ Created default subscription plan {plan['name']} (id={plan_id})")
         else:
             # SQLite table creation statements
             # Create users table
@@ -1222,8 +1300,6 @@ class DatabaseManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
                     description TEXT,
-                    price_quarterly REAL DEFAULT 0.00,
-                    price_annual REAL DEFAULT 0.00,
                     storage_gb INTEGER DEFAULT 0,
                     project_limit INTEGER DEFAULT 0,
                     user_limit INTEGER DEFAULT 1,
@@ -1235,7 +1311,22 @@ class DatabaseManager:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
+
+            # Create subscription_plan_prices table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_plan_prices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plan_id INTEGER NOT NULL,
+                    duration_months INTEGER NOT NULL,
+                    price REAL NOT NULL,
+                    currency TEXT DEFAULT 'usd',
+                    stripe_price_id TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(plan_id, duration_months),
+                    FOREIGN KEY (plan_id) REFERENCES subscription_plans (id) ON DELETE CASCADE
+                )
+            """)
+
             # Create user_subscriptions table - FIXED: interval is a reserved word, using backticks
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_subscriptions (
@@ -1247,7 +1338,7 @@ class DatabaseManager:
                     current_period_start DATETIME,
                     current_period_end DATETIME,
                     status TEXT DEFAULT 'active',
-                    `interval` TEXT DEFAULT 'quarterly',
+                    `interval` TEXT DEFAULT 'six_month',
                     auto_renew BOOLEAN DEFAULT 1,
                     is_active BOOLEAN DEFAULT 1,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -2901,287 +2992,390 @@ class DatabaseManager:
             conn.close()
 
     # Subscription plan methods
-    def create_subscription_plan(self, name: str, description: str, price_quarterly: float, price_annual: float,
-                                 storage_gb: int, project_limit: int, user_limit: int, action_limit: int,
-                                 features: List[str], has_free_trial: bool, trial_days: int) -> int:
-        """Create a new subscription plan"""
+    def create_subscription_plan(
+        self,
+        name: str,
+        description: str,
+        storage_gb: int,
+        project_limit: int,
+        user_limit: int,
+        action_limit: int,
+        features: List[str],
+        has_free_trial: bool,
+        trial_days: int,
+        prices: List[Dict[str, Any]],
+    ) -> int:
+        """Create a new subscription plan with normalized pricing."""
+
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
-        
+
         try:
-            # Debug: print what we're receiving
-            print(f"DB Method - Features received: {features}")
-            print(f"DB Method - Features type: {type(features)}")
-            
-            features_json = json.dumps(features) if features else "[]"
-            print(f"DB Method - Features JSON: {features_json}")
-            
+            features_json = self._serialize_features(features)
             cur.execute(
-                f"INSERT INTO subscription_plans (name, description, price_quarterly, price_annual, storage_gb, project_limit, user_limit, action_limit, features, has_free_trial, trial_days) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
-                (name, description, price_quarterly, price_annual, storage_gb, project_limit, user_limit, action_limit, features_json, has_free_trial, trial_days)
+                f"INSERT INTO subscription_plans (name, description, storage_gb, project_limit, user_limit, action_limit, features, has_free_trial, trial_days) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
+                (
+                    name,
+                    description,
+                    storage_gb,
+                    project_limit,
+                    user_limit,
+                    action_limit,
+                    features_json,
+                    has_free_trial,
+                    trial_days,
+                ),
             )
             conn.commit()
-            
-            cur.execute(f"SELECT id FROM subscription_plans WHERE name = {placeholder}", (name,))
-            plan = cur.fetchone()
-            return plan[0] if plan else None
-        except Exception as e:
-            print(f"Database error: {str(e)}")
-            raise
+
+            if self.use_rds:
+                plan_id = cur.lastrowid
+            else:
+                plan_id = cur.lastrowid
+
+            if not plan_id:
+                cur.execute(f"SELECT id FROM subscription_plans WHERE name = {placeholder}", (name,))
+                row = cur.fetchone()
+                plan_id = row[0] if row else None
+
+            if not plan_id:
+                raise ValueError("Failed to create subscription plan")
+
+            normalized_prices = self._normalize_plan_prices(prices)
+            if normalized_prices:
+                self._upsert_subscription_plan_prices(cur, plan_id, normalized_prices)
+                conn.commit()
+
+            return plan_id
         finally:
             conn.close()
-    def get_all_subscription_plans(self) -> List[SubscriptionPlan]:
-        """Get all subscription plans.
 
-        This implementation is defensive: older databases may be missing some
-        columns (eg. price_quarterly). We SELECT * and then map available
-        columns to the SubscriptionPlan dataclass, parsing `features` robustly.
-        Results are sorted in Python by price_quarterly (fallback to price_annual
-        or 0.0) to preserve previous ordering behavior.
-        """
+    def _serialize_features(self, features: Optional[List[str]]) -> str:
+        if not features:
+            return "[]"
+        try:
+            return json.dumps(features)
+        except TypeError:
+            return json.dumps(list(features))
+
+    def _normalize_plan_prices(self, prices: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        if not prices:
+            return normalized
+
+        for price in prices:
+            if not price:
+                continue
+            duration = int(price.get("duration_months", 0))
+            if duration not in (6, 12):
+                continue
+            try:
+                amount = float(price.get("price", 0))
+            except (TypeError, ValueError):
+                continue
+            normalized.append(
+                {
+                    "duration_months": duration,
+                    "price": amount,
+                    "currency": (price.get("currency") or "usd").lower(),
+                    "stripe_price_id": price.get("stripe_price_id"),
+                }
+            )
+
+        return normalized
+
+    def _upsert_subscription_plan_prices(
+        self,
+        cursor,
+        plan_id: int,
+        prices: List[Dict[str, Any]],
+    ) -> None:
+        placeholder = self._get_placeholder()
+        cursor.execute(
+            f"SELECT id, duration_months FROM subscription_plan_prices WHERE plan_id = {placeholder}",
+            (plan_id,),
+        )
+        existing = {row[1]: row[0] for row in cursor.fetchall()}
+
+        seen: set[int] = set()
+        for price in prices:
+            duration = price["duration_months"]
+            seen.add(duration)
+            params = (
+                price["price"],
+                price["currency"],
+                price.get("stripe_price_id"),
+            )
+            if duration in existing:
+                price_id = existing[duration]
+                cursor.execute(
+                    f"UPDATE subscription_plan_prices SET price = {placeholder}, currency = {placeholder}, stripe_price_id = {placeholder} WHERE id = {placeholder}",
+                    (*params, price_id),
+                )
+            else:
+                cursor.execute(
+                    f"INSERT INTO subscription_plan_prices (plan_id, duration_months, price, currency, stripe_price_id) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
+                    (plan_id, duration, *params),
+                )
+
+        for duration, price_id in existing.items():
+            if duration not in seen:
+                cursor.execute(
+                    f"DELETE FROM subscription_plan_prices WHERE id = {placeholder}",
+                    (price_id,),
+                )
+
+    def _map_subscription_plan(self, row, columns: List[str]) -> SubscriptionPlan:
+        col_idx = {name: idx for idx, name in enumerate(columns)}
+
+        def get(col_name, default=None):
+            idx = col_idx.get(col_name)
+            if idx is None:
+                return default
+            try:
+                return row[idx]
+            except Exception:
+                return default
+
+        raw_features = get("features")
+        features: List[str] = []
+        if raw_features:
+            try:
+                if isinstance(raw_features, str):
+                    features = json.loads(raw_features)
+                elif isinstance(raw_features, (list, dict)):
+                    features = raw_features
+                elif isinstance(raw_features, (bytes, memoryview)):
+                    features = json.loads(bytes(raw_features).decode("utf-8"))
+            except Exception:
+                features = []
+
+        return SubscriptionPlan(
+            id=get("id"),
+            name=get("name"),
+            description=get("description"),
+            storage_gb=get("storage_gb") or 0,
+            project_limit=get("project_limit") or 0,
+            user_limit=get("user_limit") or 1,
+            action_limit=get("action_limit") or 0,
+            features=features,
+            is_active=bool(get("is_active", True)),
+            has_free_trial=bool(get("has_free_trial", False)),
+            trial_days=get("trial_days") or 0,
+            created_at=get("created_at"),
+            prices=[],
+        )
+
+    def get_all_subscription_plans(self) -> List[SubscriptionPlan]:
         conn = self.get_connection()
         cur = conn.cursor()
 
         try:
-            cur.execute("SELECT * FROM subscription_plans")
+            cur.execute(
+                "SELECT id, name, description, storage_gb, project_limit, user_limit, action_limit, features, is_active, has_free_trial, trial_days, created_at FROM subscription_plans"
+            )
             rows = cur.fetchall()
-
-            # Build column name -> index map from cursor.description if available
-            col_idx = {}
-            if cur.description:
-                for idx, col in enumerate(cur.description):
-                    # col[0] is the name in most DB adapters
-                    col_name = col[0] if isinstance(col, (list, tuple)) else getattr(col, 'name', None)
-                    if not col_name:
-                        # Fallback for sqlite/simple cursors
-                        col_name = col
-                    col_idx[col_name] = idx
+            columns = [
+                col[0] if isinstance(col, (list, tuple)) else getattr(col, "name", col)
+                for col in (cur.description or [])
+            ]
 
             plans: List[SubscriptionPlan] = []
-
             for row in rows:
-                # Helper to safely get by column name
-                def get(col_name, default=None):
-                    idx = col_idx.get(col_name)
-                    if idx is None:
-                        return default
-                    try:
-                        return row[idx]
-                    except Exception:
-                        return default
-
-                raw_features = get('features')
-                features: List = []
-                if raw_features:
-                    try:
-                        if isinstance(raw_features, (list, dict)):
-                            features = raw_features
-                        elif isinstance(raw_features, (bytes, memoryview)):
-                            # Convert binary JSONB -> str
-                            raw = bytes(raw_features).decode('utf-8')
-                            features = json.loads(raw)
-                        elif isinstance(raw_features, str):
-                            features = json.loads(raw_features)
-                        else:
-                            # Try best-effort conversion
-                            features = list(raw_features) if hasattr(raw_features, '__iter__') else []
-                    except Exception:
-                        features = []
-
-                # Determine prices with fallbacks
-                try:
-                    price_quarterly = float(get('price_quarterly', get('price', 0.0) or 0.0))
-                except Exception:
-                    price_quarterly = 0.0
-                try:
-                    price_annual = float(get('price_annual', 0.0) or 0.0)
-                except Exception:
-                    price_annual = 0.0
-
-                plan = SubscriptionPlan(
-                    id=get('id'),
-                    name=get('name'),
-                    description=get('description'),
-                    price_quarterly=price_quarterly,
-                    price_annual=price_annual,
-                    storage_gb=get('storage_gb') or 0,
-                    project_limit=get('project_limit') or 0,
-                    user_limit=get('user_limit') or 1,
-                    action_limit=get('action_limit') or 0,
-                    features=features,
-                    is_active=bool(get('is_active', True)),
-                    has_free_trial=bool(get('has_free_trial', False)),
-                    trial_days=get('trial_days') or 0,
-                    created_at=get('created_at')
-                )
+                plan = self._map_subscription_plan(row, columns)
+                plan.prices = self.get_plan_prices(plan.id)
+                if not plan.prices:
+                    plan.prices = self._legacy_plan_prices(row, columns)
                 plans.append(plan)
 
-            # Sort by price_quarterly (fallback to price_annual or 0.0)
-            plans.sort(key=lambda p: (p.price_quarterly or p.price_annual or 0.0))
+            plans.sort(key=lambda p: p.prices[0].price if p.prices else 0.0)
             return plans
         finally:
             conn.close()
-    def get_subscription_plan_by_id(self, plan_id: int) -> Optional[SubscriptionPlan]:
-        """Get subscription plan by ID"""
-        conn = self.get_connection()
-        cur = conn.cursor()
-        try:
-            # Use a flexible SELECT to avoid errors if the schema is older/missing columns
-            if self.use_rds:
-                cur.execute("SELECT * FROM subscription_plans WHERE id = %s", (plan_id,))
-            else:
-                cur.execute("SELECT * FROM subscription_plans WHERE id = ?", (plan_id,))
-            row = cur.fetchone()
 
-            if not row:
+    def _legacy_plan_prices(self, row, columns: List[str]) -> List[SubscriptionPlanPrice]:
+        col_idx = {name: idx for idx, name in enumerate(columns)}
+
+        def get(col_name):
+            idx = col_idx.get(col_name)
+            if idx is None:
+                return None
+            try:
+                return row[idx]
+            except Exception:
                 return None
 
-            # Build column mapping
-            col_idx = {}
-            if cur.description:
-                for idx, col in enumerate(cur.description):
-                    col_name = col[0] if isinstance(col, (list, tuple)) else getattr(col, 'name', None)
-                    if not col_name:
-                        col_name = col
-                    col_idx[col_name] = idx
-
-            def get(col_name, default=None):
-                idx = col_idx.get(col_name)
-                if idx is None:
-                    return default
-                try:
-                    return row[idx]
-                except Exception:
-                    return default
-
-            raw_features = get('features')
-            features = []
-            if raw_features:
-                try:
-                    if isinstance(raw_features, str):
-                        features = json.loads(raw_features)
-                    elif isinstance(raw_features, (list, dict)):
-                        features = raw_features
-                    elif isinstance(raw_features, (bytes, memoryview)):
-                        features = json.loads(bytes(raw_features).decode('utf-8'))
-                except Exception:
-                    features = []
-
+        prices: List[SubscriptionPlanPrice] = []
+        quarterly = get("price_quarterly")
+        if quarterly is not None:
             try:
-                price_quarterly = float(get('price_quarterly', get('price', 0.0) or 0.0))
-            except Exception:
-                price_quarterly = 0.0
+                prices.append(
+                    SubscriptionPlanPrice(
+                        duration_months=6,
+                        price=float(quarterly or 0.0),
+                    )
+                )
+            except (TypeError, ValueError):
+                pass
+        annual = get("price_annual")
+        if annual is not None:
             try:
-                price_annual = float(get('price_annual', 0.0) or 0.0)
-            except Exception:
-                price_annual = 0.0
+                prices.append(
+                    SubscriptionPlanPrice(
+                        duration_months=12,
+                        price=float(annual or 0.0),
+                    )
+                )
+            except (TypeError, ValueError):
+                pass
+        return prices
 
-            return SubscriptionPlan(
-                id=get('id'), name=get('name'), description=get('description'),
-                price_quarterly=price_quarterly, price_annual=price_annual,
-                storage_gb=get('storage_gb') or 0, project_limit=get('project_limit') or 0,
-                user_limit=get('user_limit') or 1, action_limit=get('action_limit') or 0,
-                features=features, is_active=bool(get('is_active', True)),
-                has_free_trial=bool(get('has_free_trial', False)), trial_days=get('trial_days') or 0,
-                created_at=get('created_at')
+    def get_plan_prices(self, plan_id: int) -> List[SubscriptionPlanPrice]:
+        conn = self.get_connection()
+        cur = conn.cursor()
+        placeholder = self._get_placeholder()
+
+        try:
+            cur.execute(
+                f"SELECT id, plan_id, duration_months, price, currency, stripe_price_id, created_at FROM subscription_plan_prices WHERE plan_id = {placeholder} ORDER BY duration_months",
+                (plan_id,),
+            )
+            rows = cur.fetchall()
+            return [
+                SubscriptionPlanPrice(
+                    id=row[0],
+                    plan_id=row[1],
+                    duration_months=row[2],
+                    price=float(row[3]),
+                    currency=row[4] or "usd",
+                    stripe_price_id=row[5],
+                    created_at=row[6],
+                )
+                for row in rows
+            ]
+        finally:
+            conn.close()
+
+    def get_plan_price_option(self, plan_id: int, interval: str) -> Optional[SubscriptionPlanPrice]:
+        try:
+            normalized = SubscriptionInterval.normalize(interval)
+        except ValueError:
+            return None
+
+        months = normalized.duration_months
+        conn = self.get_connection()
+        cur = conn.cursor()
+        placeholder = self._get_placeholder()
+
+        try:
+            cur.execute(
+                f"SELECT id, plan_id, duration_months, price, currency, stripe_price_id, created_at FROM subscription_plan_prices WHERE plan_id = {placeholder} AND duration_months = {placeholder}",
+                (plan_id, months),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return SubscriptionPlanPrice(
+                id=row[0],
+                plan_id=row[1],
+                duration_months=row[2],
+                price=float(row[3]),
+                currency=row[4] or "usd",
+                stripe_price_id=row[5],
+                created_at=row[6],
             )
         finally:
             conn.close()
-    
-    def get_subscription_plan_by_name(self, name: str) -> Optional[SubscriptionPlan]:
-        """Get subscription plan by name"""
+
+    def get_subscription_plan_by_id(self, plan_id: int) -> Optional[SubscriptionPlan]:
         conn = self.get_connection()
         cur = conn.cursor()
+        placeholder = self._get_placeholder()
+
         try:
-            query = "SELECT * FROM subscription_plans WHERE name = %s" if self.use_rds else "SELECT * FROM subscription_plans WHERE name = ?"
+            cur.execute(
+                f"SELECT id, name, description, storage_gb, project_limit, user_limit, action_limit, features, is_active, has_free_trial, trial_days, created_at FROM subscription_plans WHERE id = {placeholder}",
+                (plan_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            columns = [
+                col[0] if isinstance(col, (list, tuple)) else getattr(col, "name", col)
+                for col in (cur.description or [])
+            ]
+            plan = self._map_subscription_plan(row, columns)
+            plan.prices = self.get_plan_prices(plan.id)
+            if not plan.prices:
+                plan.prices = self._legacy_plan_prices(row, columns)
+            return plan
+        finally:
+            conn.close()
+
+    def get_subscription_plan_by_name(self, name: str) -> Optional[SubscriptionPlan]:
+        conn = self.get_connection()
+        cur = conn.cursor()
+
+        try:
+            query = (
+                "SELECT id, name, description, storage_gb, project_limit, user_limit, action_limit, features, is_active, has_free_trial, trial_days, created_at FROM subscription_plans WHERE name = %s"
+                if self.use_rds
+                else "SELECT id, name, description, storage_gb, project_limit, user_limit, action_limit, features, is_active, has_free_trial, trial_days, created_at FROM subscription_plans WHERE name = ?"
+            )
             cur.execute(query, (name,))
             row = cur.fetchone()
             if not row:
                 return None
 
-            # Column mapping
-            col_idx = {}
-            if cur.description:
-                for idx, col in enumerate(cur.description):
-                    col_name = col[0] if isinstance(col, (list, tuple)) else getattr(col, 'name', None)
-                    if not col_name:
-                        col_name = col
-                    col_idx[col_name] = idx
-
-            def get(col_name, default=None):
-                idx = col_idx.get(col_name)
-                if idx is None:
-                    return default
-                try:
-                    return row[idx]
-                except Exception:
-                    return default
-
-            raw_features = get('features')
-            features = []
-            if raw_features:
-                try:
-                    if isinstance(raw_features, str):
-                        features = json.loads(raw_features)
-                    elif isinstance(raw_features, (list, dict)):
-                        features = raw_features
-                    elif isinstance(raw_features, (bytes, memoryview)):
-                        features = json.loads(bytes(raw_features).decode('utf-8'))
-                except Exception:
-                    features = []
-
-            try:
-                price_quarterly = float(get('price_quarterly', get('price', 0.0) or 0.0))
-            except Exception:
-                price_quarterly = 0.0
-            try:
-                price_annual = float(get('price_annual', 0.0) or 0.0)
-            except Exception:
-                price_annual = 0.0
-
-            return SubscriptionPlan(
-                id=get('id'), name=get('name'), description=get('description'),
-                price_quarterly=price_quarterly, price_annual=price_annual,
-                storage_gb=get('storage_gb') or 0, project_limit=get('project_limit') or 0,
-                user_limit=get('user_limit') or 1, action_limit=get('action_limit') or 0,
-                features=features, is_active=bool(get('is_active', True)),
-                has_free_trial=bool(get('has_free_trial', False)), trial_days=get('trial_days') or 0,
-                created_at=get('created_at')
-            )
+            columns = [
+                col[0] if isinstance(col, (list, tuple)) else getattr(col, "name", col)
+                for col in (cur.description or [])
+            ]
+            plan = self._map_subscription_plan(row, columns)
+            plan.prices = self.get_plan_prices(plan.id)
+            if not plan.prices:
+                plan.prices = self._legacy_plan_prices(row, columns)
+            return plan
         finally:
             conn.close()
-    
+
     def update_subscription_plan(self, plan_id: int, **kwargs) -> bool:
-        """Update subscription plan"""
+        prices = kwargs.pop("prices", None)
+
+        if not kwargs and prices is None:
+            return False
+
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
-        
+
         try:
             update_fields = []
             params = []
-            
+
             for key, value in kwargs.items():
-                if value is not None:
-                    if key == 'features' and isinstance(value, list):
-                        value = json.dumps(value)
-                    update_fields.append(f"{key} = ?")
-                    params.append(value)
-            
-            if not update_fields:
-                return False
-            
-            if self.use_rds:
-                update_fields.append("updated_at = CURRENT_TIMESTAMP")
-            else:
-                update_fields.append("updated_at = datetime('now')")
-            
-            params.append(plan_id)
-            query = f"UPDATE subscription_plans SET {', '.join(update_fields)} WHERE id = ?"
-            cur.execute(query, params)
+                if value is None:
+                    continue
+                if key == "features" and isinstance(value, list):
+                    value = json.dumps(value)
+                update_fields.append(f"{key} = {placeholder}")
+                params.append(value)
+
+            if update_fields:
+                params.append(plan_id)
+                cur.execute(
+                    f"UPDATE subscription_plans SET {', '.join(update_fields)} WHERE id = {placeholder}",
+                    tuple(params),
+                )
+
+            if prices is not None:
+                normalized = self._normalize_plan_prices(prices)
+                self._upsert_subscription_plan_prices(cur, plan_id, normalized)
+
             conn.commit()
-            return cur.rowcount > 0
+            return True
         finally:
             conn.close()
     
@@ -3611,7 +3805,7 @@ class DatabaseManager:
         plan_id: int,
         stripe_subscription_id: str = None,
         stripe_customer_id: str = None,
-        interval: str = "quarterly",
+        interval: str = SubscriptionInterval.SIX_MONTH.value,
         current_period_start: Optional[datetime] = None,
         current_period_end: Optional[datetime] = None,
         status: str = "active",
@@ -3843,11 +4037,82 @@ class DatabaseManager:
         """Get total storage usage in MB"""
         conn = self.get_connection()
         cur = conn.cursor()
-        
+
         try:
             cur.execute("SELECT SUM(used_storage_mb) FROM user_storage")
             result = cur.fetchone()[0]
             return result if result else 0
+        finally:
+            conn.close()
+
+    def get_dashboard_metrics(self, days: int = 14) -> Dict[str, Any]:
+        """Get time series metrics for the admin dashboard graph."""
+
+        if days < 1:
+            days = 14
+
+        end_date = datetime.utcnow().date()
+        start_date = end_date - timedelta(days=days - 1)
+        labels = [start_date + timedelta(days=i) for i in range(days)]
+
+        def _as_date(value) -> Optional[datetime.date]:
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value.date()
+            if isinstance(value, str):
+                for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+                    try:
+                        return datetime.strptime(value[:26], fmt).date()
+                    except ValueError:
+                        continue
+                try:
+                    return datetime.fromisoformat(value).date()
+                except Exception:
+                    return None
+            return None
+
+        datasets = {
+            "new_users": ("userdata", "created_at"),
+            "new_projects": ("projects", "created_at"),
+            "new_subscriptions": ("user_subscriptions", "created_at"),
+        }
+
+        placeholder = self._get_placeholder()
+        metrics = {key: {label: 0 for label in labels} for key in datasets.keys()}
+
+        conn = self.get_connection()
+        cur = conn.cursor()
+
+        try:
+            for key, (table, column) in datasets.items():
+                query = (
+                    f"SELECT {column} FROM {table} "
+                    f"WHERE {column} >= {placeholder} AND {column} < {placeholder}"
+                )
+                cur.execute(query, (start_date, end_date + timedelta(days=1)))
+                rows = cur.fetchall()
+                for row in rows:
+                    date_value = _as_date(row[0])
+                    if date_value and start_date <= date_value <= end_date:
+                        metrics[key][date_value] += 1
+
+            labels_iso = [label.isoformat() for label in labels]
+            series = {
+                key: [metrics[key][label] for label in labels]
+                for key in metrics
+            }
+            totals = {key: sum(values) for key, values in series.items()}
+
+            return {
+                "labels": labels_iso,
+                "series": series,
+                "totals": totals,
+                "range": {
+                    "start": labels_iso[0] if labels_iso else None,
+                    "end": labels_iso[-1] if labels_iso else None,
+                },
+            }
         finally:
             conn.close()
     
