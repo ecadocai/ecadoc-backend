@@ -249,7 +249,9 @@ class EmailService:
         invitee_name: str,
         inviter_name: str,
         project_name: str,
-        action_url: Optional[str] = None
+        action_url: Optional[str] = None,
+        accept_url: Optional[str] = None,
+        reject_url: Optional[str] = None,
     ) -> bool:
         """Send project invitation email"""
         if not self.is_configured():
@@ -259,7 +261,29 @@ class EmailService:
         subject = f"{inviter_name} invited you to collaborate on '{project_name}'"
         action_button = ""
         if action_url:
-            action_button = f"<p style=\"text-align:center;\"><a href=\"{action_url}\" style=\"display:inline-block;padding:12px 30px;background:#667eea;color:#fff;text-decoration:none;border-radius:5px;\">View invitation</a></p>"
+            action_button = (
+                "<p style=\"text-align:center;\">"
+                f"<a href=\"{action_url}\" style=\"display:inline-block;padding:12px 30px;background:#667eea;color:#fff;text-decoration:none;border-radius:5px;\">View invitation</a>"
+                "</p>"
+            )
+
+        decision_buttons = ""
+        decision_button_html: List[str] = []
+        if accept_url:
+            decision_button_html.append(
+                f"<a href=\"{accept_url}\" style=\"display:inline-block;padding:12px 24px;background:#2ecc71;color:#fff;text-decoration:none;border-radius:5px;margin:0 5px;\">Accept invitation</a>"
+            )
+        if reject_url:
+            decision_button_html.append(
+                f"<a href=\"{reject_url}\" style=\"display:inline-block;padding:12px 24px;background:#e74c3c;color:#fff;text-decoration:none;border-radius:5px;margin:0 5px;\">Reject invitation</a>"
+            )
+
+        if decision_button_html:
+            decision_buttons = (
+                "<div style=\"text-align:center;margin:20px 0;\">"
+                + "".join(decision_button_html)
+                + "</div>"
+            )
 
         html_body = f"""
 <!DOCTYPE html>
@@ -285,6 +309,7 @@ class EmailService:
                 <p><strong>{inviter_name}</strong> invited you to collaborate on the project <strong>{project_name}</strong> in Ecadoc.</p>
                 <p>You can accept or decline the invitation directly from the notifications panel inside Ecadoc.</p>
             {action_button}
+            {decision_buttons}
             <p>If you weren't expecting this, you can safely ignore the email.</p>
         </div>
     </div>
@@ -292,13 +317,24 @@ class EmailService:
 </html>
         """
 
-        text_body = f"""Hi {invitee_name},
+        text_lines = [
+            f"Hi {invitee_name},",
+            "",
+            f"{inviter_name} invited you to collaborate on the project '{project_name}' in Esticore.",
+            "You can accept or decline the invitation from the notifications panel inside Esticore.",
+            "",
+        ]
 
-{inviter_name} invited you to collaborate on the project '{project_name}' in Esticore.
-You can accept or decline the invitation from the notifications panel inside Esticore.
+        if action_url:
+            text_lines.extend(["View invitation:", action_url, ""])
+        if accept_url:
+            text_lines.extend(["Accept invitation:", accept_url, ""])
+        if reject_url:
+            text_lines.extend(["Reject invitation:", reject_url, ""])
 
-If you weren't expecting this, you can ignore this email.
-"""
+        text_lines.append("If you weren't expecting this, you can ignore this email.")
+
+        text_body = "\n".join(text_lines)
 
         return self._send_email(invitee_email, subject, text_body, html_body)
 
