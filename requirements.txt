@@ -39,6 +39,7 @@ httptools==0.6.4
 httpx==0.28.1
 httpx-sse==0.4.1
 idna==3.10
+inference-sdk
 jiter==0.11.0
 jmespath==1.0.1
 jsonpatch==1.33
@@ -112,7 +113,7 @@ typing-inspection==0.4.1
 typing_extensions==4.15.0
 urllib3==2.5.0
 uvicorn==0.36.0
-uvloop==0.21.0
+# uvloop==0.21.0
 watchfiles==1.1.0
 websockets==15.0.1
 xxhash==3.5.0
