@@ -77,7 +77,7 @@ async def update_user_storage(user_id: int, file_size_mb: float = Form(...)):
 async def switch_user_subscription(
     user_id: int,
     plan_id: int = Form(...),
-    interval: SubscriptionInterval = Form(SubscriptionInterval.QUARTERLY)
+    interval: SubscriptionInterval = Form(SubscriptionInterval.SIX_MONTH)
 ):
     """Switch a user's subscription plan without payment processing"""
     return admin_service.switch_user_subscription_plan(user_id, plan_id, interval)
@@ -91,45 +91,73 @@ async def get_all_subscription_plans():
 async def create_subscription_plan(
     name: str = Form(...),
     description: str = Form(...),
-    price_quarterly: float = Form(...),
-    price_annual: float = Form(...),
+    six_month_price: float = Form(...),
+    annual_price: float = Form(...),
     storage_gb: int = Form(...),
     project_limit: int = Form(...),
     user_limit: int = Form(1),
     action_limit: int = Form(0),
     features: List[str] = Form([]),
     has_free_trial: bool = Form(False),
-    trial_days: int = Form(0)
+    trial_days: int = Form(0),
+    six_month_stripe_price_id: Optional[str] = Form(None),
+    annual_stripe_price_id: Optional[str] = Form(None),
+    currency: str = Form("usd")
 ):
     """Create a new subscription plan"""
     
     print(features)
 
     return admin_service.create_subscription_plan(
-        name, description, price_quarterly, price_annual, storage_gb,
-        project_limit, user_limit, action_limit, features,
-        has_free_trial, trial_days
+        name,
+        description,
+        storage_gb,
+        project_limit,
+        user_limit,
+        action_limit,
+        features,
+        has_free_trial,
+        trial_days,
+        six_month_price,
+        annual_price,
+        six_month_stripe_price_id,
+        annual_stripe_price_id,
+        currency,
     )
 @router.patch("/subscription/plans/{plan_id}", dependencies=[Depends(verify_admin_token)])
 async def update_subscription_plan(
     plan_id: int,
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
-    price_quarterly: Optional[float] = Form(None),
-    price_annual: Optional[float] = Form(None),
     storage_gb: Optional[int] = Form(None),
     project_limit: Optional[int] = Form(None),
     user_limit: Optional[int] = Form(None),
     action_limit: Optional[int] = Form(None),
     features: Optional[List[str]] = Form(None),  # FastAPI can handle list in Form data
-    is_active: Optional[bool] = Form(None)
+    is_active: Optional[bool] = Form(None),
+    six_month_price: Optional[float] = Form(None),
+    annual_price: Optional[float] = Form(None),
+    six_month_stripe_price_id: Optional[str] = Form(None),
+    annual_stripe_price_id: Optional[str] = Form(None),
+    currency: Optional[str] = Form(None)
 ):
     """Update a subscription plan (partial update)"""
     # No need for manual JSON parsing for features list
     return admin_service.update_subscription_plan(
-        plan_id, name, description, price_quarterly, price_annual,
-        storage_gb, project_limit, user_limit, action_limit,
-        features, is_active  # Pass the list directly
+        plan_id,
+        name,
+        description,
+        storage_gb,
+        project_limit,
+        user_limit,
+        action_limit,
+        features,
+        is_active,
+        six_month_price,
+        annual_price,
+        six_month_stripe_price_id,
+        annual_stripe_price_id,
+        currency,
     )
 @router.delete("/subscription/plans/{plan_id}", dependencies=[Depends(verify_admin_token)])
 async def delete_subscription_plan(plan_id: int):
@@ -191,6 +219,12 @@ async def delete_ai_model(model_id: int):
 async def get_dashboard_statistics():
     """Get admin dashboard statistics"""
     return admin_service.get_dashboard_statistics()
+
+
+@router.get("/dashboard/metrics", dependencies=[Depends(verify_admin_token)])
+async def get_dashboard_metrics(days: int = 14):
+    """Get time-series metrics for admin dashboard charts."""
+    return admin_service.get_dashboard_metrics(days)
 
 @router.get("/subscription/reminders", dependencies=[Depends(verify_admin_token)])
 async def get_subscription_reminders():

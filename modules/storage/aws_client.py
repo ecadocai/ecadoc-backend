@@ -31,12 +31,14 @@ class AWSClient:
         """Upload file to S3"""
         if not self.s3_client:
             return False  # Fallback to local storage
-        
+
         try:
             extra_args = {}
             if content_type:
                 extra_args['ContentType'] = content_type
-            
+            extra_args.setdefault('CacheControl', 'public, max-age=31536000, immutable')
+            extra_args.setdefault('ACL', 'public-read')
+
             self.s3_client.upload_fileobj(
                 file_obj,
                 self.s3_bucket,
@@ -73,17 +75,23 @@ class AWSClient:
             return False
     
     def get_file_url(self, s3_key: str, expires_in: int = 3600) -> Optional[str]:
-        """Generate presigned URL for file access"""
+        """Generate a stable URL for file access."""
         if not self.s3_client:
             return None
-        
+
         try:
-            url = self.s3_client.generate_presigned_url(
-                'get_object',
-                Params={'Bucket': self.s3_bucket, 'Key': s3_key},
-                ExpiresIn=expires_in
-            )
-            return url
+            if settings.CLOUDFRONT_DISTRIBUTION_DOMAIN:
+                domain = settings.CLOUDFRONT_DISTRIBUTION_DOMAIN.rstrip('/')
+                return f"https://{domain}/{s3_key}"
+
+            if settings.S3_PUBLIC_BASE_URL:
+                base = settings.S3_PUBLIC_BASE_URL.rstrip('/')
+                return f"{base}/{s3_key}"
+
+            region = self.aws_region or "us-east-1"
+            if region == "us-east-1":
+                return f"https://{self.s3_bucket}.s3.amazonaws.com/{s3_key}"
+            return f"https://{self.s3_bucket}.s3.{region}.amazonaws.com/{s3_key}"
         except Exception as e:
             print(f"AWS URL generation error: {str(e)}")
             return None

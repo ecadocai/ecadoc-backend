@@ -312,6 +312,36 @@ async def respond_to_invitation(
         raise HTTPException(status_code=500, detail=f"Failed to respond to invitation: {str(e)}") from e
 
 
+@router.post("/invitations/{invitation_id}/accept")
+async def accept_invitation(
+    invitation_id: int,
+    user_id: int = Depends(get_current_user_id),
+):
+    """Accept a project invitation."""
+
+    try:
+        return project_service.respond_to_invitation(invitation_id, user_id, True)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to accept invitation: {str(e)}") from e
+
+
+@router.post("/invitations/{invitation_id}/reject")
+async def reject_invitation(
+    invitation_id: int,
+    user_id: int = Depends(get_current_user_id),
+):
+    """Reject a project invitation."""
+
+    try:
+        return project_service.respond_to_invitation(invitation_id, user_id, False)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reject invitation: {str(e)}") from e
+
+
 @router.get("/invitations")
 async def list_invitations(
     user_id: int,

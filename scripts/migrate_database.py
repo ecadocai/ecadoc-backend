@@ -42,8 +42,6 @@ def migrate_database():
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(255) UNIQUE NOT NULL,
                 description TEXT,
-                price_quarterly NUMERIC(10,2) DEFAULT 0.00,
-                price_annual NUMERIC(10,2) DEFAULT 0.00,
                 storage_gb INT DEFAULT 0,
                 project_limit INT DEFAULT 0,
                 user_limit INT DEFAULT 1,
@@ -57,6 +55,23 @@ def migrate_database():
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_plan_name ON subscription_plans (name)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_plan_active ON subscription_plans (is_active)")
+
+        # 2b. Create subscription_plan_prices table
+        print("Ensuring subscription_plan_prices table exists...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS subscription_plan_prices (
+                id SERIAL PRIMARY KEY,
+                plan_id INT NOT NULL REFERENCES subscription_plans (id) ON DELETE CASCADE,
+                duration_months INT NOT NULL,
+                price NUMERIC(10,2) NOT NULL,
+                currency VARCHAR(10) DEFAULT 'usd',
+                stripe_price_id VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (plan_id, duration_months)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_plan_prices_plan ON subscription_plan_prices (plan_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_plan_prices_duration ON subscription_plan_prices (duration_months)")
         
         # 3. Create user_subscriptions table
         print("Creating user_subscriptions table...")
@@ -72,7 +87,7 @@ def migrate_database():
                 current_period_start TIMESTAMP,
                 current_period_end TIMESTAMP,
                 status VARCHAR(50) DEFAULT 'active',
-                interval VARCHAR(20) DEFAULT 'quarterly',
+                interval VARCHAR(20) DEFAULT 'six_month',
                 auto_renew BOOLEAN DEFAULT TRUE,
                 is_active BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -84,6 +99,66 @@ def migrate_database():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sub_user_id ON user_subscriptions (user_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sub_plan_id ON user_subscriptions (plan_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sub_status ON user_subscriptions (status)")
+
+        # 3b. Migrate legacy subscription pricing if columns still exist
+        print("Checking for legacy pricing columns...")
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='subscription_plans' AND column_name IN ('price_quarterly', 'price_annual')
+        """)
+        legacy_columns = {row[0] for row in cur.fetchall()}
+
+        if legacy_columns:
+            print("Migrating legacy pricing columns into subscription_plan_prices...")
+            select_columns = ["id"]
+            if 'price_quarterly' in legacy_columns:
+                select_columns.append("price_quarterly")
+            else:
+                select_columns.append("NULL AS price_quarterly")
+
+            if 'price_annual' in legacy_columns:
+                select_columns.append("price_annual")
+            else:
+                select_columns.append("NULL AS price_annual")
+
+            cur.execute(f"SELECT {', '.join(select_columns)} FROM subscription_plans")
+            rows = cur.fetchall()
+            for plan_id, quarterly_price, annual_price in rows:
+                if quarterly_price and float(quarterly_price) > 0:
+                    six_month_price = float(quarterly_price) * 2
+                    cur.execute(
+                        """
+                            INSERT INTO subscription_plan_prices (plan_id, duration_months, price, currency)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (plan_id, duration_months) DO NOTHING
+                        """,
+                        (plan_id, 6, six_month_price, 'usd'),
+                    )
+                if annual_price and float(annual_price) > 0:
+                    cur.execute(
+                        """
+                            INSERT INTO subscription_plan_prices (plan_id, duration_months, price, currency)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (plan_id, duration_months) DO NOTHING
+                        """,
+                        (plan_id, 12, float(annual_price), 'usd'),
+                    )
+
+            if 'price_quarterly' in legacy_columns:
+                print("Dropping price_quarterly column...")
+                cur.execute("ALTER TABLE subscription_plans DROP COLUMN price_quarterly")
+            if 'price_annual' in legacy_columns:
+                print("Dropping price_annual column...")
+                cur.execute("ALTER TABLE subscription_plans DROP COLUMN price_annual")
+
+        # 3c. Normalize legacy interval values
+        print("Normalizing legacy subscription intervals...")
+        cur.execute("ALTER TABLE user_subscriptions ALTER COLUMN interval SET DEFAULT 'six_month'")
+        cur.execute("""
+            UPDATE user_subscriptions
+            SET interval = 'six_month'
+            WHERE interval IN ('quarterly', 'quarter', 'monthly', 'month')
+        """)
         
         # 4. Create user_storage table
         print("Creating user_storage table...")

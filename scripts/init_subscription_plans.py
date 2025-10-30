@@ -14,8 +14,8 @@ def initialize_subscription_plans():
         {
             "name": "Solo Plan",
             "description": "Project Repository & Document Upload (up to 3 active projects, 15GB storage)",
-            "price_quarterly": 0.0,  # Free trial
-            "price_annual": 99.0,
+            "six_month_price": 0.0,  # Free trial
+            "annual_price": 99.0,
             "storage_gb": 15,
             "project_limit": 3,
             "user_limit": 1,
@@ -30,13 +30,14 @@ def initialize_subscription_plans():
                 "Full Bluebeam Studio Sync"
             ],
             "has_free_trial": True,
-            "trial_days": 30
+            "trial_days": 30,
+            "currency": "usd"
         },
         {
             "name": "Team Plan",
             "description": "Team Collaboration (shared project folders, concurrent editing)",
-            "price_quarterly": 49.0,
-            "price_annual": 499.0,
+            "six_month_price": 98.0,
+            "annual_price": 499.0,
             "storage_gb": 50,
             "project_limit": 10,
             "user_limit": 5,
@@ -51,13 +52,14 @@ def initialize_subscription_plans():
                 "Project History Retention: up to 10 versions per project"
             ],
             "has_free_trial": False,
-            "trial_days": 0
+            "trial_days": 0,
+            "currency": "usd"
         },
         {
             "name": "Business Plan",
             "description": "Advanced features for business teams",
-            "price_quarterly": 99.0,
-            "price_annual": 999.0,
+            "six_month_price": 198.0,
+            "annual_price": 999.0,
             "storage_gb": 100,
             "project_limit": 20,
             "user_limit": 20,
@@ -71,13 +73,14 @@ def initialize_subscription_plans():
                 "Project History Retention: up to 20 versions per project"
             ],
             "has_free_trial": False,
-            "trial_days": 0
+            "trial_days": 0,
+            "currency": "usd"
         },
         {
             "name": "Enterprise Plan",
             "description": "Enterprise-grade features for large organizations",
-            "price_quarterly": 199.0,
-            "price_annual": 1999.0,
+            "six_month_price": 398.0,
+            "annual_price": 1999.0,
             "storage_gb": 300,
             "project_limit": 50,
             "user_limit": 50,
@@ -93,7 +96,8 @@ def initialize_subscription_plans():
                 "Quarterly Success Reviews & Workflow Optimization Consulting"
             ],
             "has_free_trial": False,
-            "trial_days": 0
+            "trial_days": 0,
+            "currency": "usd"
         }
     ]
     
@@ -105,15 +109,25 @@ def initialize_subscription_plans():
                 db_manager.create_subscription_plan(
                     name=plan_data["name"],
                     description=plan_data["description"],
-                    price_quarterly=plan_data["price_quarterly"],
-                    price_annual=plan_data["price_annual"],
                     storage_gb=plan_data["storage_gb"],
                     project_limit=plan_data["project_limit"],
                     user_limit=plan_data["user_limit"],
                     action_limit=plan_data["action_limit"],
                     features=plan_data["features"],
                     has_free_trial=plan_data["has_free_trial"],
-                    trial_days=plan_data["trial_days"]
+                    trial_days=plan_data["trial_days"],
+                    prices=[
+                        {
+                            "duration_months": 6,
+                            "price": plan_data["six_month_price"],
+                            "currency": plan_data.get("currency", "usd"),
+                        },
+                        {
+                            "duration_months": 12,
+                            "price": plan_data["annual_price"],
+                            "currency": plan_data.get("currency", "usd"),
+                        },
+                    ],
                 )
                 print(f"✅ Created plan: {plan_data['name']}")
             else:
