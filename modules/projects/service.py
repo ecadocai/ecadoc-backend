@@ -4,6 +4,7 @@ Project management service for the Floor Plan Agent API
 import uuid
 from typing import List, Optional, Dict, Any
 from modules.database.models import db_manager, Project
+from modules.config.settings import settings
 from modules.pdf_processing.service import pdf_processor
 
 class ProjectService:
@@ -539,9 +540,22 @@ class ProjectService:
         self.db.create_notification(invitee.id, title, message, "project_invitation", metadata)
 
         from modules.auth.email_service import email_service
+
+        base_frontend = settings.FRONTEND_URL.rstrip("/")
+        invitation_page = f"{base_frontend}/projects/invitations/{invitation_id}"
+        accept_url = f"{invitation_page}?response=accept"
+        reject_url = f"{invitation_page}?response=reject"
         invitee_name = f"{invitee.firstname} {invitee.lastname}".strip()
         inviter_name = f"{inviter.firstname} {inviter.lastname}".strip()
-        email_service.send_project_invitation_email(invitee.email, invitee_name or invitee.email, inviter_name or inviter.email, project.name)
+        email_service.send_project_invitation_email(
+            invitee.email,
+            invitee_name or invitee.email,
+            inviter_name or inviter.email,
+            project.name,
+            action_url=invitation_page,
+            accept_url=accept_url,
+            reject_url=reject_url,
+        )
 
         return {
             "message": "Invitation sent successfully",

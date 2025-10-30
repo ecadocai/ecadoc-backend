@@ -20,7 +20,7 @@ async def get_user_subscription(user_id: int = Depends(get_current_user_id)):
 @router.post("/create-checkout-session")
 async def create_checkout_session(
     plan_id: int = Form(...),
-    interval: SubscriptionInterval = Form(...),  # 'quarterly' or 'annual'
+    interval: SubscriptionInterval = Form(SubscriptionInterval.SIX_MONTH),
     user_id: int = Depends(get_current_user_id)
 ):
     """Create Stripe checkout session"""

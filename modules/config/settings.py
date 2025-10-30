@@ -70,6 +70,8 @@ class Settings:
     AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
     AWS_REGION = os.getenv('AWS_REGION')
     S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
+    S3_PUBLIC_BASE_URL = os.getenv('S3_PUBLIC_BASE_URL')
+    CLOUDFRONT_DISTRIBUTION_DOMAIN = os.getenv('CLOUDFRONT_DISTRIBUTION_DOMAIN')
 
     # JWT and Base URL
     JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY')
