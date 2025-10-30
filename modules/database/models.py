@@ -3156,7 +3156,6 @@ class DatabaseManager:
     ) -> int:
         """Create a new subscription plan with normalized pricing."""
 
-        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
@@ -3318,7 +3317,6 @@ class DatabaseManager:
         )
 
     def get_all_subscription_plans(self) -> List[SubscriptionPlan]:
-        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
 
@@ -3383,7 +3381,6 @@ class DatabaseManager:
         return prices
 
     def get_plan_prices(self, plan_id: int) -> List[SubscriptionPlanPrice]:
-        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
@@ -3416,7 +3413,6 @@ class DatabaseManager:
             return None
 
         months = normalized.duration_months
-        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
@@ -3500,7 +3496,6 @@ class DatabaseManager:
         if not kwargs and prices is None:
             return False
 
-        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
