@@ -1,5 +1,6 @@
 import pytest
 
+from modules.config.settings import settings
 from modules.database.models import DatabaseManager
 
 
@@ -67,3 +68,32 @@ def test_init_database_creates_subscription_tables(monkeypatch, db_flag):
         assert any("CREATE INDEX IF NOT EXISTS idx_plan_prices_plan" in q for q in executed)
     else:
         assert executed  # sanity check the fake cursor was exercised
+
+
+def test_get_all_subscription_plans_recovers_missing_price_table(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "USE_RDS", False, raising=False)
+    monkeypatch.setattr(settings, "DB_PORT", 0, raising=False)
+    test_db = tmp_path / "missing_prices.sqlite"
+    manager = DatabaseManager(db_name=str(test_db))
+    manager.use_rds = False
+    manager.is_postgres = False
+
+    # Simulate the table being dropped in an existing deployment
+    conn = manager.get_connection()
+    cur = conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS subscription_plan_prices")
+    conn.commit()
+    conn.close()
+
+    # The new guard should silently recreate the table and not raise
+    plans = manager.get_all_subscription_plans()
+    assert isinstance(plans, list)
+
+    # Verify the table now exists again
+    conn = manager.get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='subscription_plan_prices'"
+    )
+    assert cur.fetchone()
+    conn.close()

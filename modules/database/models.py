@@ -606,7 +606,7 @@ class DatabaseManager:
         """Initialize database tables"""
         conn = self.get_connection()
         cur = conn.cursor()
-        
+
         if self.use_rds and self.is_postgres:
             # PostgreSQL table creation statements
             print("Initializing PostgreSQL database...")
@@ -1717,7 +1717,83 @@ class DatabaseManager:
                 return f'"{identifier}"'
             return f'`{identifier}`'
         return f'"{identifier}"'
-    
+
+    def ensure_subscription_pricing_schema(self):
+        """Ensure the subscription_plan_prices table exists for the active database."""
+
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+
+            if self.use_rds and self.is_postgres:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS subscription_plan_prices (
+                        id SERIAL PRIMARY KEY,
+                        plan_id INTEGER NOT NULL,
+                        duration_months INTEGER NOT NULL,
+                        price NUMERIC(10, 2) NOT NULL,
+                        currency VARCHAR(10) DEFAULT 'usd',
+                        stripe_price_id VARCHAR(255),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE (plan_id, duration_months),
+                        FOREIGN KEY (plan_id) REFERENCES subscription_plans (id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_plan_prices_plan ON subscription_plan_prices (plan_id)")
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_plan_prices_duration ON subscription_plan_prices (duration_months)"
+                )
+            elif self.use_rds:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS subscription_plan_prices (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        plan_id INT NOT NULL,
+                        duration_months INT NOT NULL,
+                        price DECIMAL(10,2) NOT NULL,
+                        currency VARCHAR(10) DEFAULT 'usd',
+                        stripe_price_id VARCHAR(255),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY uq_plan_duration (plan_id, duration_months),
+                        FOREIGN KEY (plan_id) REFERENCES subscription_plans (id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """
+                )
+            else:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS subscription_plan_prices (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        plan_id INTEGER NOT NULL,
+                        duration_months INTEGER NOT NULL,
+                        price REAL NOT NULL,
+                        currency TEXT DEFAULT 'usd',
+                        stripe_price_id TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(plan_id, duration_months),
+                        FOREIGN KEY (plan_id) REFERENCES subscription_plans (id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_plan_prices_plan ON subscription_plan_prices (plan_id)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_plan_prices_duration ON subscription_plan_prices (duration_months)"
+                )
+
+            conn.commit()
+        except (PostgreSQLError, MySQLError, sqlite3.Error) as exc:
+            if conn:
+                conn.rollback()
+            raise Exception(f"Failed to ensure subscription pricing schema: {exc}") from exc
+        finally:
+            if conn:
+                conn.close()
+
     def ensure_pgvector_extension(self) -> bool:
         """Ensure pgvector extension is available in PostgreSQL"""
         if not self.is_postgres:
@@ -3080,6 +3156,7 @@ class DatabaseManager:
     ) -> int:
         """Create a new subscription plan with normalized pricing."""
 
+        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
@@ -3241,6 +3318,7 @@ class DatabaseManager:
         )
 
     def get_all_subscription_plans(self) -> List[SubscriptionPlan]:
+        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
 
@@ -3305,6 +3383,7 @@ class DatabaseManager:
         return prices
 
     def get_plan_prices(self, plan_id: int) -> List[SubscriptionPlanPrice]:
+        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
@@ -3337,6 +3416,7 @@ class DatabaseManager:
             return None
 
         months = normalized.duration_months
+        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
@@ -3420,6 +3500,7 @@ class DatabaseManager:
         if not kwargs and prices is None:
             return False
 
+        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
