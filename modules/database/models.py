@@ -1794,42 +1794,6 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    def _is_missing_price_table_error(self, exc: Exception) -> bool:
-        """Return True when an exception indicates the price table is missing."""
-
-        message = str(exc).lower()
-        if "subscription_plan_prices" not in message:
-            return False
-
-        if isinstance(exc, PostgreSQLError):
-            return getattr(exc, "pgcode", None) == "42P01"
-        if isinstance(exc, MySQLError):
-            errno = getattr(exc, "errno", None)
-            return errno == 1146 or "doesn't exist" in message
-        if isinstance(exc, sqlite3.Error):
-            return "no such table" in message
-        return False
-
-    def _execute_with_price_table_guard(self, conn, cursor, query: str, params: tuple = ()): 
-        """Execute a query and recreate the price table if it has been dropped."""
-
-        params = params or ()
-
-        try:
-            cursor.execute(query, params)
-        except (PostgreSQLError, MySQLError, sqlite3.Error) as exc:
-            if not self._is_missing_price_table_error(exc):
-                raise
-
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-
-            self.ensure_subscription_pricing_schema()
-            cursor.execute(query, params)
-
     def ensure_pgvector_extension(self) -> bool:
         """Ensure pgvector extension is available in PostgreSQL"""
         if not self.is_postgres:
@@ -3192,7 +3156,6 @@ class DatabaseManager:
     ) -> int:
         """Create a new subscription plan with normalized pricing."""
 
-        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
@@ -3278,10 +3241,7 @@ class DatabaseManager:
         prices: List[Dict[str, Any]],
     ) -> None:
         placeholder = self._get_placeholder()
-        connection = getattr(cursor, "connection", None)
-        self._execute_with_price_table_guard(
-            connection,
-            cursor,
+        cursor.execute(
             f"SELECT id, duration_months FROM subscription_plan_prices WHERE plan_id = {placeholder}",
             (plan_id,),
         )
@@ -3357,7 +3317,6 @@ class DatabaseManager:
         )
 
     def get_all_subscription_plans(self) -> List[SubscriptionPlan]:
-        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
 
@@ -3422,15 +3381,12 @@ class DatabaseManager:
         return prices
 
     def get_plan_prices(self, plan_id: int) -> List[SubscriptionPlanPrice]:
-        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
 
         try:
-            self._execute_with_price_table_guard(
-                conn,
-                cur,
+            cur.execute(
                 f"SELECT id, plan_id, duration_months, price, currency, stripe_price_id, created_at FROM subscription_plan_prices WHERE plan_id = {placeholder} ORDER BY duration_months",
                 (plan_id,),
             )
@@ -3457,15 +3413,12 @@ class DatabaseManager:
             return None
 
         months = normalized.duration_months
-        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
 
         try:
-            self._execute_with_price_table_guard(
-                conn,
-                cur,
+            cur.execute(
                 f"SELECT id, plan_id, duration_months, price, currency, stripe_price_id, created_at FROM subscription_plan_prices WHERE plan_id = {placeholder} AND duration_months = {placeholder}",
                 (plan_id, months),
             )
@@ -3543,7 +3496,6 @@ class DatabaseManager:
         if not kwargs and prices is None:
             return False
 
-        self.ensure_subscription_pricing_schema()
         conn = self.get_connection()
         cur = conn.cursor()
         placeholder = self._get_placeholder()
