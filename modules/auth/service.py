@@ -558,8 +558,12 @@ class AuthService:
 
             _otp_record, normalized_purpose = self._validate_otp(user, sanitized_otp, purpose)
 
-            # Mark OTP as consumed
-            self.db.consume_user_otp(user.id, sanitized_otp, normalized_purpose)
+            # Mark OTP as consumed for single-step flows only. For password reset we
+            # allow a separate reset call to consume the OTP after verification so
+            # that users can first confirm the code and then submit their new
+            # password without getting an "OTP already used" error.
+            if normalized_purpose != "password_reset":
+                self.db.consume_user_otp(user.id, sanitized_otp, normalized_purpose)
 
             if normalized_purpose == "email_verification":
                 if user.is_verified:
