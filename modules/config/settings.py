@@ -80,7 +80,6 @@ class Settings:
     # Database type selection and validation
     USE_RDS = bool(DB_HOST and DB_NAME and DB_USER and DB_PASSWORD)
     IS_POSTGRES = DB_PORT == 5432
-    IS_MYSQL = DB_PORT == 3306
     
     # PostgreSQL/pgvector Configuration
     PGVECTOR_ENABLED = os.getenv('PGVECTOR_ENABLED', 'true').lower() == 'true'
@@ -173,9 +172,6 @@ class Settings:
                     print("✓ Database storage enabled - files and vectors stored in PostgreSQL")
                 else:
                     print("⚠ pgvector disabled - using local file storage")
-            elif cls.IS_MYSQL:
-                print(f"✓ Using MySQL database: {cls.DB_HOST}:{cls.DB_PORT}/{cls.DB_NAME}")
-                print("ℹ MySQL detected - using local file storage (pgvector not available)")
             else:
                 print(f"⚠ Unknown database type on port {cls.DB_PORT} - assuming local file storage")
             

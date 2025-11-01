@@ -9,7 +9,6 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
 import sqlite3
-import mysql.connector
 from modules.config.settings import settings
 from modules.database.models import Document, FileStorage, db_manager
 

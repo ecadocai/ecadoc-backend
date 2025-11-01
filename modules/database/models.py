@@ -3,8 +3,6 @@ Database models and operations for the Floor Plan Agent API
 """
 import os
 import sqlite3
-import mysql.connector
-from mysql.connector import Error as MySQLError
 import psycopg2
 from psycopg2 import Error as PostgreSQLError
 from psycopg2.extras import RealDictCursor
@@ -476,23 +474,6 @@ class DatabaseManager:
                     'password': settings.DB_PASSWORD,
                     'connect_timeout': 30
                 }
-            else:
-                self.mysql_config = {
-                    'host': settings.DB_HOST,
-                    'port': settings.DB_PORT,
-                    'database': settings.DB_NAME,
-                    'user': settings.DB_USER,
-                    'password': settings.DB_PASSWORD,
-                    'autocommit': False,
-                    'charset': 'utf8mb4',
-                    'collation': 'utf8mb4_unicode_ci',
-                    # Connection pooling and timeout settings
-                    'pool_name': 'esticore_pool',
-                    'pool_size': 10,
-                    'pool_reset_session': True,
-                    'connect_timeout': 30,
-                    'sql_mode': 'STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO'
-                }
         
         self.init_database()
 
@@ -538,10 +519,10 @@ class DatabaseManager:
                     if self.is_postgres:
                         return psycopg2.connect(**self.postgres_config)
                     else:
-                        return mysql.connector.connect(**self.mysql_config)
-                except (PostgreSQLError, MySQLError) as e:
+                        raise Exception("Only PostgreSQL is supported (configure DB_PORT=5432)")
+                except (PostgreSQLError) as e:
                     if attempt == max_retries - 1:
-                        db_type = "PostgreSQL" if self.is_postgres else "MySQL"
+                        db_type = "PostgreSQL"
                         raise Exception(f"Failed to connect to {db_type} after {max_retries} attempts: {e}")
                     
                     # Handle specific connection errors
@@ -582,7 +563,7 @@ class DatabaseManager:
                 conn.commit()
                 return result
                 
-            except (PostgreSQLError, MySQLError) as e:
+            except (PostgreSQLError) as e:
                 if conn:
                     conn.rollback()
                 
@@ -592,7 +573,7 @@ class DatabaseManager:
                     time.sleep(0.5 * (attempt + 1))  # Progressive delay
                     continue
                 else:
-                    db_type = "PostgreSQL" if self.is_postgres else "MySQL"
+                    db_type = "PostgreSQL"
                     raise Exception(f"{db_type} query error: {e}")
             except Exception as e:
                 if conn:
@@ -1786,7 +1767,7 @@ class DatabaseManager:
                 )
 
             conn.commit()
-        except (PostgreSQLError, MySQLError, sqlite3.Error) as exc:
+        except (PostgreSQLError, sqlite3.Error) as exc:
             if conn:
                 conn.rollback()
             raise Exception(f"Failed to ensure subscription pricing schema: {exc}") from exc
@@ -2759,6 +2740,15 @@ class DatabaseManager:
         placeholder = self._get_placeholder()
         
         try:
+            # Ensure Postgres sequence is in sync to avoid duplicate key errors
+            if self.use_rds and self.is_postgres:
+                try:
+                    cur.execute(
+                        "SELECT setval(pg_get_serial_sequence('userdata','id'), COALESCE((SELECT MAX(id) FROM userdata), 0) + 1, false)"
+                    )
+                except Exception:
+                    # Best-effort; continue even if we cannot adjust the sequence
+                    pass
             cur.execute(
                 f"INSERT INTO userdata (firstname, lastname, email, password, google_id) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
                 (firstname, lastname, email, hashed_password, google_id)
