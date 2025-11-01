@@ -43,9 +43,9 @@ class Settings:
     LANGSMITH_PROJECT = os.getenv('LANGSMITH_PROJECT')
     
     # Roboflow Configuration
-    ROBOFLOW_API_URL = "https://serverless.roboflow.com"
-    ROBOFLOW_API_KEY = "vVIEhzGbQzi4RDzrfvgd"
-    ROBOFLOW_MODEL_ID = "esticore-floorplan-68jz3/3"
+    ROBOFLOW_API_URL =  os.getenv('ROBOFLOW_API_URL')
+    ROBOFLOW_API_KEY = os.getenv('ROBOFLOW_API_KEY')
+    ROBOFLOW_MODEL_ID =  os.getenv('ROBOFLOW_MODEL_ID')
     
     # Tavily Configuration
     TAVILY_API_KEY = os.getenv('TAVILY_API_KEY')
