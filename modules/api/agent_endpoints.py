@@ -272,7 +272,7 @@ Please handle this request using the most appropriate tool.
             print("DEBUG: Non-JSON response detected. Treating as informational text.")
             answer_text = final_msg
             suggestions = extract_manual_suggestions(answer_text)
-            
+
             if suggestions:
                 split_patterns = [r'\n\nHere are some related topics.*', r'\n\nRelated topics.*', r'\n\n\d+\. \*\*.*']
                 for pattern in split_patterns:
@@ -280,7 +280,7 @@ Please handle this request using the most appropriate tool.
                     if match:
                         answer_text = answer_text[:match.start()].strip()
                         break
-            
+
             response_content = {
                 "response": answer_text,
                 "session_id": session_id,
@@ -293,14 +293,22 @@ Please handle this request using the most appropriate tool.
             }
             # Save plain text to history
             session_manager.add_message_to_session(session_id, user_id, "assistant", answer_text)
-            # Try to extract citations embedded in the plain text answer
+
+            # Prefer generating citations from the document instead of parsing the chat text
             try:
-                parsed_citations, parsed_most = parse_citations_from_text(answer_text, doc_id=doc_id)
-                if parsed_citations:
-                    response_content["citations"] = parsed_citations
-                    response_content["most_referenced_page"] = parsed_most
+                hybrid = process_question_with_hybrid_search(doc_id, user_instruction)
+                if hybrid and isinstance(hybrid, dict) and hybrid.get("citations"):
+                    response_content["citations"] = hybrid.get("citations", [])
+                    if hybrid.get("most_referenced_page"):
+                        response_content["most_referenced_page"] = hybrid.get("most_referenced_page")
+                else:
+                    # Fallback: attempt to parse any inline citations in the answer text
+                    parsed_citations, parsed_most = parse_citations_from_text(answer_text, doc_id=doc_id)
+                    if parsed_citations:
+                        response_content["citations"] = parsed_citations
+                        response_content["most_referenced_page"] = parsed_most
             except Exception as e:
-                print(f"DEBUG: Failed to parse inline citations: {e}")
+                print(f"DEBUG: Failed to generate citations for plain-text response: {e}")
             return JSONResponse(content=response_content)
             
     except Exception as e:
@@ -536,7 +544,7 @@ Please handle this request using the most appropriate tool.
             print("DEBUG: Project non-JSON response detected.")
             answer_text = final_msg
             suggestions = extract_manual_suggestions(answer_text)
-            
+
             if suggestions:
                 split_patterns = [r'\n\nHere are some related topics.*', r'\n\nRelated topics.*', r'\n\n\d+\. \*\*.*']
                 for pattern in split_patterns:
@@ -544,7 +552,7 @@ Please handle this request using the most appropriate tool.
                     if match:
                         answer_text = answer_text[:match.start()].strip()
                         break
-            
+
             response_content = {
                 "response": answer_text,
                 "session_id": session_id,
@@ -559,14 +567,21 @@ Please handle this request using the most appropriate tool.
             }
             # Save plain text answer
             session_manager.add_message_to_session(session_id, user_id, "assistant", answer_text)
-            # Try to extract citations embedded in the plain text answer
+            # Prefer generating citations from the document instead of parsing the chat text
             try:
-                parsed_citations, parsed_most = parse_citations_from_text(answer_text, doc_id=final_doc_id)
-                if parsed_citations:
-                    response_content["citations"] = parsed_citations
-                    response_content["most_referenced_page"] = parsed_most
+                hybrid = process_question_with_hybrid_search(final_doc_id, user_instruction)
+                if hybrid and isinstance(hybrid, dict) and hybrid.get("citations"):
+                    response_content["citations"] = hybrid.get("citations", [])
+                    if hybrid.get("most_referenced_page"):
+                        response_content["most_referenced_page"] = hybrid.get("most_referenced_page")
+                else:
+                    # Fallback: attempt to parse inline citations in the answer text
+                    parsed_citations, parsed_most = parse_citations_from_text(answer_text, doc_id=final_doc_id)
+                    if parsed_citations:
+                        response_content["citations"] = parsed_citations
+                        response_content["most_referenced_page"] = parsed_most
             except Exception as e:
-                print(f"DEBUG: Failed to parse inline citations in project response: {e}")
+                print(f"DEBUG: Failed to generate citations for plain-text project response: {e}")
             return JSONResponse(content=response_content)
             
     except Exception as e:

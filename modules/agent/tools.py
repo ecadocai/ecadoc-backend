@@ -178,7 +178,12 @@ def get_internet_search_results(query: str, max_results: int = 3) -> str:
         return ""
 
 def create_comprehensive_answer(doc_content: str, web_content: str, question: str, citations: List = None) -> str:
-    """Create a comprehensive answer combining document content and web information."""
+    """Create a comprehensive answer combining document content and web information.
+
+    Note: Citations are returned separately by the caller. Do not embed
+    a citations block in the answer text to avoid duplication with the
+    structured `citations` field.
+    """
     try:
         # Prepare the content for the LLM
         combined_context = ""
@@ -192,13 +197,6 @@ def create_comprehensive_answer(doc_content: str, web_content: str, question: st
         # If no content from either source, provide a helpful response
         if not combined_context.strip():
             return f"I understand you're asking about: {question}. Let me provide what I can tell you about this topic based on general knowledge and analysis capabilities. I can analyze both textual content and visual elements (layouts, diagrams, spatial relationships) when available. However, I recommend consulting current resources, expert documentation, and specialized sources for the most accurate and up-to-date information."
-        
-        # Create citation references if available
-        citation_text = ""
-        if citations:
-            citation_text = "\n\nDocument citations:\n"
-            for citation in citations[:5]:
-                citation_text += f"[{citation['id']}] Page {citation['page']}\n"
         
         # Use LLM to create comprehensive answer
         llm = ChatOpenAI(model=settings.OPENAI_MODEL, temperature=0.0, api_key=settings.OPENAI_API_KEY)
@@ -217,7 +215,12 @@ Please provide a thorough, well-organized answer that:
 5. Integrates visual information (layouts, designs, spatial relationships) when relevant
 6. Maintains accuracy while being comprehensive
 
-If some aspects of the question cannot be fully answered from the available sources, acknowledge this but still provide all relevant information that is available.{citation_text}"""
+If some aspects of the question cannot be fully answered from the available sources, acknowledge this but still provide all relevant information that is available.
+
+Important formatting rules:
+- Do not include a citations section in the answer.
+- Do not echo a list of pages or references.
+- Keep the answer focused and self-contained; citations are handled separately by the system."""
         
         response = llm.invoke(comprehensive_prompt)
         return response.content
