@@ -476,6 +476,23 @@ class DatabaseManager:
                 }
         
         self.init_database()
+        # One-time startup sequence sync for PostgreSQL to prevent PK collisions
+        if self.use_rds and self.is_postgres:
+            conn = None
+            try:
+                conn = self.get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT setval(pg_get_serial_sequence('userdata','id'), "
+                    "COALESCE((SELECT MAX(id) FROM userdata), 1), "
+                    "((SELECT MAX(id) FROM userdata) IS NOT NULL))"
+                )
+                conn.commit()
+            except Exception as e:
+                print(f"WARNING: Unable to sync userdata id sequence: {e}")
+            finally:
+                if conn:
+                    conn.close()
 
     @staticmethod
     def _map_user_row(row) -> Optional[User]:
@@ -2740,24 +2757,44 @@ class DatabaseManager:
         placeholder = self._get_placeholder()
         
         try:
-            # Ensure Postgres sequence is in sync to avoid duplicate key errors
-            if self.use_rds and self.is_postgres:
-                try:
-                    cur.execute(
-                        "SELECT setval(pg_get_serial_sequence('userdata','id'), COALESCE((SELECT MAX(id) FROM userdata), 0) + 1, false)"
-                    )
-                except Exception:
-                    # Best-effort; continue even if we cannot adjust the sequence
-                    pass
+            insert_sql = (
+                f"INSERT INTO userdata (firstname, lastname, email, password, google_id) "
+                f"VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})"
+            )
+            params = (firstname, lastname, email, hashed_password, google_id)
+
             cur.execute(
-                f"INSERT INTO userdata (firstname, lastname, email, password, google_id) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
-                (firstname, lastname, email, hashed_password, google_id)
+                insert_sql,
+                params
             )
             conn.commit()
             
             cur.execute(f"SELECT id FROM userdata WHERE email = {placeholder}", (email,))
             user = cur.fetchone()
             return user[0] if user else None
+        except PostgreSQLError as e:
+            # Handle possible sequence desync causing duplicate primary key
+            # Error code 23505 = unique_violation
+            if self.use_rds and self.is_postgres and getattr(e, 'pgcode', None) == '23505':
+                try:
+                    conn.rollback()
+                    # Sync sequence to current MAX(id)
+                    cur.execute(
+                        "SELECT setval(pg_get_serial_sequence('userdata','id'), "
+                        "COALESCE((SELECT MAX(id) FROM userdata), 1), "
+                        "((SELECT MAX(id) FROM userdata) IS NOT NULL))"
+                    )
+                    conn.commit()
+                    # Retry once
+                    cur.execute(insert_sql, params)
+                    conn.commit()
+                    cur.execute(f"SELECT id FROM userdata WHERE email = {placeholder}", (email,))
+                    user = cur.fetchone()
+                    return user[0] if user else None
+                except Exception:
+                    conn.rollback()
+                    raise
+            raise
         finally:
             conn.close()
     
