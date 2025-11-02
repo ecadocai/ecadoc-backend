@@ -545,6 +545,8 @@ class ProjectService:
 
         invitation_base = INVITATION_BASE_URL.rstrip("/")
         invitation_page = f"{invitation_base}/{invitation_id}"
+        accept_url = f"{invitation_page}?response=accept"
+        reject_url = f"{invitation_page}?response=reject"
         invitee_name = f"{invitee.firstname} {invitee.lastname}".strip()
         inviter_name = f"{inviter.firstname} {inviter.lastname}".strip()
         email_service.send_project_invitation_email(
