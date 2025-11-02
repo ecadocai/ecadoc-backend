@@ -4,8 +4,10 @@ Project management service for the Floor Plan Agent API
 import uuid
 from typing import List, Optional, Dict, Any
 from modules.database.models import db_manager, Project
-from modules.config.settings import settings
 from modules.pdf_processing.service import pdf_processor
+
+
+INVITATION_BASE_URL = "https://app.ecadoc.ai/projects/invitations"
 
 class ProjectService:
     """Project management service"""
@@ -541,8 +543,8 @@ class ProjectService:
 
         from modules.auth.email_service import email_service
 
-        base_frontend = settings.FRONTEND_URL.rstrip("/")
-        invitation_page = f"{base_frontend}/projects/invitations/{invitation_id}"
+        invitation_base = INVITATION_BASE_URL.rstrip("/")
+        invitation_page = f"{invitation_base}/{invitation_id}"
         accept_url = f"{invitation_page}?response=accept"
         reject_url = f"{invitation_page}?response=reject"
         invitee_name = f"{invitee.firstname} {invitee.lastname}".strip()
@@ -553,8 +555,6 @@ class ProjectService:
             inviter_name or inviter.email,
             project.name,
             action_url=invitation_page,
-            accept_url=accept_url,
-            reject_url=reject_url,
         )
 
         return {
