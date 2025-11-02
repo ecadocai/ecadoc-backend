@@ -3,7 +3,7 @@ import pytest
 from modules.auth.email_service import email_service
 
 
-def test_project_invitation_email_includes_accept_reject(monkeypatch):
+def test_project_invitation_email_includes_view_button(monkeypatch):
     monkeypatch.setattr(email_service, "is_configured", lambda: True)
 
     captured = {}
@@ -27,28 +27,19 @@ def test_project_invitation_email_includes_accept_reject(monkeypatch):
         "Inviter Name",
         "Example Project",
         action_url="https://app.example.com/projects/invitations/123",
-        accept_url="https://app.example.com/projects/invitations/123?response=accept",
-        reject_url="https://app.example.com/projects/invitations/123?response=reject",
     )
 
     assert captured["to_email"] == "invitee@example.com"
-    assert "Accept invitation" in captured["html"]
-    assert "Reject invitation" in captured["html"]
-    assert "Accept invitation:" in captured["text"]
-    assert "Reject invitation:" in captured["text"]
-    assert "https://app.example.com/projects/invitations/123?response=accept" in captured["html"]
-    assert "https://app.example.com/projects/invitations/123?response=reject" in captured["html"]
+    assert "View invitation" in captured["html"]
+    assert "Accept invitation" not in captured["html"]
+    assert "Reject invitation" not in captured["html"]
+    assert "View invitation:" in captured["text"]
+    assert "Accept invitation:" not in captured["text"]
+    assert "Reject invitation:" not in captured["text"]
+    assert "https://app.example.com/projects/invitations/123" in captured["html"]
 
 
-@pytest.mark.parametrize(
-    "accept_url,reject_url,expected_snippet",
-    [
-        (None, None, "View invitation"),
-        ("https://app.example.com/accept", None, "Accept invitation"),
-        (None, "https://app.example.com/reject", "Reject invitation"),
-    ],
-)
-def test_project_invitation_email_handles_optional_links(monkeypatch, accept_url, reject_url, expected_snippet):
+def test_project_invitation_email_handles_missing_action_link(monkeypatch):
     monkeypatch.setattr(email_service, "is_configured", lambda: True)
 
     captured = {}
@@ -64,18 +55,8 @@ def test_project_invitation_email_handles_optional_links(monkeypatch, accept_url
         "Invitee Name",
         "Inviter Name",
         "Example Project",
-        action_url="https://app.example.com/projects/invitations/123",
-        accept_url=accept_url,
-        reject_url=reject_url,
+        action_url=None,
     )
 
-    assert expected_snippet in captured["html"]
-    if accept_url:
-        assert "Accept invitation:" in captured["text"]
-    else:
-        assert "Accept invitation:" not in captured["text"]
-
-    if reject_url:
-        assert "Reject invitation:" in captured["text"]
-    else:
-        assert "Reject invitation:" not in captured["text"]
+    assert "View invitation" not in captured["html"]
+    assert "View invitation:" not in captured["text"]

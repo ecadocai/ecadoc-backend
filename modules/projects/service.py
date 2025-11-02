@@ -555,8 +555,6 @@ class ProjectService:
             inviter_name or inviter.email,
             project.name,
             action_url=invitation_page,
-            accept_url=accept_url,
-            reject_url=reject_url,
         )
 
         return {
