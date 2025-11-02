@@ -250,8 +250,6 @@ class EmailService:
         inviter_name: str,
         project_name: str,
         action_url: Optional[str] = None,
-        accept_url: Optional[str] = None,
-        reject_url: Optional[str] = None,
     ) -> bool:
         """Send project invitation email"""
         if not self.is_configured():
@@ -265,24 +263,6 @@ class EmailService:
                 "<p style=\"text-align:center;\">"
                 f"<a href=\"{action_url}\" style=\"display:inline-block;padding:12px 30px;background:#667eea;color:#fff;text-decoration:none;border-radius:5px;\">View invitation</a>"
                 "</p>"
-            )
-
-        decision_buttons = ""
-        decision_button_html: List[str] = []
-        if accept_url:
-            decision_button_html.append(
-                f"<a href=\"{accept_url}\" style=\"display:inline-block;padding:12px 24px;background:#2ecc71;color:#fff;text-decoration:none;border-radius:5px;margin:0 5px;\">Accept invitation</a>"
-            )
-        if reject_url:
-            decision_button_html.append(
-                f"<a href=\"{reject_url}\" style=\"display:inline-block;padding:12px 24px;background:#e74c3c;color:#fff;text-decoration:none;border-radius:5px;margin:0 5px;\">Reject invitation</a>"
-            )
-
-        if decision_button_html:
-            decision_buttons = (
-                "<div style=\"text-align:center;margin:20px 0;\">"
-                + "".join(decision_button_html)
-                + "</div>"
             )
 
         html_body = f"""
@@ -309,7 +289,6 @@ class EmailService:
                 <p><strong>{inviter_name}</strong> invited you to collaborate on the project <strong>{project_name}</strong> in Ecadoc.</p>
                 <p>You can accept or decline the invitation directly from the notifications panel inside Ecadoc.</p>
             {action_button}
-            {decision_buttons}
             <p>If you weren't expecting this, you can safely ignore the email.</p>
         </div>
     </div>
@@ -327,10 +306,6 @@ class EmailService:
 
         if action_url:
             text_lines.extend(["View invitation:", action_url, ""])
-        if accept_url:
-            text_lines.extend(["Accept invitation:", accept_url, ""])
-        if reject_url:
-            text_lines.extend(["Reject invitation:", reject_url, ""])
 
         text_lines.append("If you weren't expecting this, you can ignore this email.")
 
