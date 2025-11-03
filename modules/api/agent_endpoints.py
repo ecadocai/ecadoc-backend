@@ -152,7 +152,15 @@ async def unified_agent(
         pdf_path = doc_info.get("pdf_path")
         if not pdf_path:
             raise HTTPException(404, detail="Document file path not found")
-    
+    # Ensure temporary PDF created for DB storage is cleaned up after the response
+    try:
+        if doc_info.get("storage_type") == "database" and pdf_path:
+            # Schedule deletion after response is sent (non-blocking)
+            background_tasks.add_task(delete_file_after_delay, pdf_path, 30)
+    except Exception:
+        # Never fail request due to cleanup scheduling
+        pass
+
     # Extract page number from instruction or default to 1
     page_number = 1
     page_match = re.search(r'page\s+(\d+)', user_instruction.lower())

@@ -13,6 +13,8 @@ from pypdf import PdfReader, PdfWriter
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
+from functools import lru_cache
+from functools import lru_cache
 from inference_sdk import InferenceHTTPClient
 from langchain_tavily import TavilySearch
 from datetime import datetime
@@ -29,6 +31,11 @@ CLIENT = InferenceHTTPClient(
 # Initialize tokenizer for chunking
 # Use model name from settings so tokenizer model can be configured via OPENAI_MODEL
 tokenizer = tiktoken.encoding_for_model(settings.OPENAI_MODEL)
+
+@lru_cache(maxsize=8)
+def _get_llm_cached(model: str, temperature: float) -> ChatOpenAI:
+    """Process-wide cached ChatOpenAI client (per model+temperature)."""
+    return ChatOpenAI(model=model, temperature=temperature, api_key=settings.OPENAI_API_KEY)
 
 def estimate_tokens(text: str) -> int:
     """Estimate the number of tokens in a text string."""
@@ -124,7 +131,7 @@ def combine_chunk_responses(responses: List[str], question: str) -> str:
     combined_text = "\n\n".join([f"Section {i+1}: {resp}" for i, resp in enumerate(responses)])
     
     # Use LLM to synthesize the combined responses
-    llm = ChatOpenAI(model=settings.OPENAI_MODEL, temperature=0.0, api_key=settings.OPENAI_API_KEY)
+    llm = _get_llm_cached(settings.OPENAI_MODEL, 0.0)
     synthesis_prompt = f"""I have gathered information from multiple sections of a document to answer this question: {question}
 
 Combined information from all sections:
@@ -199,7 +206,7 @@ def create_comprehensive_answer(doc_content: str, web_content: str, question: st
             return f"I understand you're asking about: {question}. Let me provide what I can tell you about this topic based on general knowledge and analysis capabilities. I can analyze both textual content and visual elements (layouts, diagrams, spatial relationships) when available. However, I recommend consulting current resources, expert documentation, and specialized sources for the most accurate and up-to-date information."
         
         # Use LLM to create comprehensive answer
-        llm = ChatOpenAI(model=settings.OPENAI_MODEL, temperature=0.0, api_key=settings.OPENAI_API_KEY)
+        llm = _get_llm_cached(settings.OPENAI_MODEL, 0.0)
         comprehensive_prompt = f"""Based on the following information sources, provide a comprehensive and detailed answer to the user's question. Synthesize information from both the document content (including any visual analysis) and current web sources to give the most complete response possible.
 
 QUESTION: {question}
@@ -386,7 +393,7 @@ def process_question_with_hybrid_search(doc_id: str, question: str, include_sugg
                 else:
                     # Process multiple chunks quickly
                     chunk_responses = []
-                    llm = ChatOpenAI(model=settings.OPENAI_MODEL, temperature=0.0, api_key=settings.OPENAI_API_KEY)
+                    llm = _get_llm_cached(settings.OPENAI_MODEL, 0.0)
                     
                     for chunk_info in chunks[:3]:  # Limit to 3 chunks for speed
                         prompt = f"""Extract key information from this document section for: {question}
@@ -556,7 +563,7 @@ def convert_pdf_page_to_image(pdf_path: str, page: int = 1, dpi: int = 300) -> s
         if not images:
             return f"Error: Page {page} not found in PDF."
 
-        temp_image_path = f"temp_floor_plan_page_{page}.png"
+        temp_image_path = f"temp_floor_plan_page_{page}_{uuid.uuid4().hex[:8]}.png"
         image = images[0]
         image.save(temp_image_path, "PNG")
 
@@ -867,7 +874,7 @@ def answer_question_using_rag(doc_id: str, question: str) -> str:
             return "I couldn't find any relevant information in the document to answer your question."
 
         # Use LLM to generate a response based on the context
-        llm = ChatOpenAI(model=settings.OPENAI_MODEL, temperature=0.0, api_key=settings.OPENAI_API_KEY)
+        llm = _get_llm_cached(settings.OPENAI_MODEL, 0.0)
         prompt = f"""Based on the following context from the document, answer the user's question concisely.
 
 Context:
@@ -938,7 +945,7 @@ def analyze_pdf_page_multimodal(doc_id: str, page_number: int = 1) -> str:
             page_text = raw_text
         
         # Use multimodal LLM to analyze both image and text
-        llm = ChatOpenAI(model=settings.OPENAI_MODEL, temperature=0.0, api_key=settings.OPENAI_API_KEY)
+        llm = _get_llm_cached(settings.OPENAI_MODEL, 0.0)
 
         # OPTIMIZATION: Shorter, more focused prompt for faster processing
         message_content = [
@@ -1031,7 +1038,7 @@ def answer_question_with_suggestions(doc_id: str, question: str) -> str:
             most_referenced_page = citations[0]["page"] if citations else None
 
         # Use LLM to generate a response based on the context
-        llm = ChatOpenAI(model=settings.OPENAI_MODEL, temperature=0.0, api_key=settings.OPENAI_API_KEY)
+        llm = _get_llm_cached(settings.OPENAI_MODEL, 0.0)
         prompt = f"""Based on the following context from the document, answer the user's question and provide related topic suggestions with page numbers.
 
 Context:
