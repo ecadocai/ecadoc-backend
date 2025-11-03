@@ -619,7 +619,9 @@ class ProjectService:
         for invitation in invitations:
             project = self.db.get_project_by_id(invitation.project_id)
             inviter = self.db.get_user_by_id(invitation.inviter_id)
+            # Include both "id" and "invitation_id" for frontend/backward compatibility
             formatted.append({
+                "id": invitation.id,
                 "invitation_id": invitation.id,
                 "project_id": invitation.project_id,
                 "project_name": project.name if project else None,
