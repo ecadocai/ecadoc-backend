@@ -294,8 +294,8 @@ async def download_pdf_optimized(user_id: int, doc_id: str, request: Request):
         metadata = await document_cache_manager.get_document_metadata(doc_id)
         
         if metadata:
-            # Validate user access from cached metadata
-            if metadata.user_id != user_id:
+            # Validate user access for owners and shared project members
+            if not optimized_document_service.validate_user_access(doc_id, user_id):
                 raise HTTPException(403, detail="Access denied")
         else:
             # Get metadata from database
