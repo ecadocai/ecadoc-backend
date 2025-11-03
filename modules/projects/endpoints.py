@@ -86,6 +86,34 @@ async def create_project(
         raise HTTPException(status_code=500, detail=f"Project creation failed: {str(e)}") from e
 
 
+@router.get("/shared")
+async def get_shared_projects(user_id: int = Depends(get_current_user_id)):
+    """
+    Get projects shared with the authenticated user.
+    """
+    try:
+        projects = project_service.get_shared_projects(user_id)
+        return {"user_id": user_id, "projects": projects}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/invitations")
+async def list_invitations(
+    status: Optional[str] = None,
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    List invitations for the authenticated user.
+    """
+    try:
+        return project_service.list_user_invitations(user_id, status)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load invitations: {str(e)}") from e
+
+
 @router.post("/create-single")
 async def create_project_single_file(
     project_name: str = Form(...),
@@ -216,18 +244,6 @@ async def get_user_projects(user_id: int, current_user_id: int = Depends(get_cur
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.get("/shared")
-async def get_shared_projects(user_id: int = Depends(get_current_user_id)):
-    """
-    Get projects shared with the authenticated user.
-    """
-    try:
-        projects = project_service.get_shared_projects(user_id)
-        return {"user_id": user_id, "projects": projects}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
 @router.post("/{project_id}/upload-documents")
 async def add_documents_to_project(
     project_id: str,
@@ -340,25 +356,6 @@ async def reject_invitation(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reject invitation: {str(e)}") from e
-
-
-@router.get("/invitations")
-async def list_invitations(
-    user_id: int,
-    status: Optional[str] = None,
-    current_user_id: int = Depends(get_current_user_id),
-):
-    """
-    List invitations for a user.
-    """
-    try:
-        if user_id != current_user_id:
-            raise HTTPException(status_code=403, detail="Access denied to requested user's invitations")
-        return project_service.list_user_invitations(user_id, status)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load invitations: {str(e)}") from e
 
 
 @router.put("/{project_id}")
