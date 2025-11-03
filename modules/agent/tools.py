@@ -658,26 +658,32 @@ def generate_frontend_annotations(
         # Note: the frontend may send a variety of human-friendly names — accept those and map
         # them to the canonical tool IDs. Keys are lower-cased because annotation_type is lower()-ed.
         tool_id_map = {
-            # existing canonical mappings
+            # existing canonical mappings (aligned with frontend ToolId)
             'highlight': 'markup.highlight',
             'rectangle': 'shape.rectangle',
             'circle': 'shape.ellipse',  # pdf.js uses ellipse for circles
-            'count': 'text.free',  # Use free text to display a number
-            'arrow': 'shape.arrow',
+            'count': 'analysis.count',
+            'arrow': 'markup.arrow',
 
             # additional frontend tool names (aliases) provided by the UI
-            'length tool': 'measure.length',
-            'measure distances and lengths': 'measure.length',
-            'polyline length': 'measure.polyline_length',
-            'measure polyline lengths': 'measure.polyline_length',
-            'area measurement': 'measure.area',
-            'measure areas and regions': 'measure.area',
-            'perimeter measurement': 'measure.perimeter',
-            'select hand': 'select.hand',
-            'cloud': 'shape.cloud',
-            'shapes': 'shape.free',
-            'note': 'text.free',
-            'polyline callout': 'shape.polyline'
+            # Measurement family
+            'length tool': 'measurement.length',
+            'measure distances and lengths': 'measurement.length',
+            'polyline length': 'measurement.polyline_length',
+            'measure polyline lengths': 'measurement.polyline_length',
+            'area measurement': 'measurement.area',
+            'measure areas and regions': 'measurement.area',
+            'perimeter measurement': 'measurement.perimeter',
+
+            # Selection / hand aliases
+            'select hand': 'hand',
+
+            # Other common UI labels
+            'cloud': 'markup.cloud',
+            # If a generic "shapes" tool is requested, default to rectangle
+            'shapes': 'shape.rectangle',
+            'note': 'annotation.note',
+            'polyline callout': 'annotation.callout'
         }
 
         # Default properties / color choices for the accepted annotation types and aliases
