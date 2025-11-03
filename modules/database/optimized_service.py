@@ -126,9 +126,9 @@ class OptimizedDocumentService:
                            f.file_data, f.content_type, f.file_size
                     FROM documents d
                     LEFT JOIN file_storage f ON d.file_id = f.file_id
-                    WHERE d.doc_id = %s AND d.user_id = %s AND d.status = 'active'
+                    WHERE d.doc_id = %s AND d.status = 'active'
                     LIMIT 1
-                """, (doc_id, user_id))
+                """, (doc_id,))
                 
                 row = cur.fetchone()
                 if not row or not row['file_data']:
@@ -184,9 +184,9 @@ class OptimizedDocumentService:
                            f.content_type, f.file_size
                     FROM documents d
                     LEFT JOIN file_storage f ON d.file_id = f.file_id
-                    WHERE d.doc_id = %s AND d.user_id = %s AND d.status = 'active'
+                    WHERE d.doc_id = %s AND d.status = 'active'
                     LIMIT 1
-                """, (doc_id, user_id))
+                """, (doc_id,))
                 
                 row = cur.fetchone()
                 if row:
@@ -199,9 +199,9 @@ class OptimizedDocumentService:
                 cur.execute(f"""
                     SELECT doc_id, filename, user_id, updated_at
                     FROM documents 
-                    WHERE doc_id = {placeholder} AND user_id = {placeholder} AND status = 'active'
+                    WHERE doc_id = {placeholder} AND status = 'active'
                     LIMIT 1
-                """, (doc_id, user_id))
+                """, (doc_id,))
                 
                 row = cur.fetchone()
                 if row:
@@ -287,21 +287,49 @@ class OptimizedDocumentService:
             
             if settings.USE_RDS and settings.IS_POSTGRES:
                 cur = conn.cursor()
+                # Direct ownership check
                 cur.execute("""
                     SELECT 1 FROM documents 
                     WHERE doc_id = %s AND user_id = %s AND status = 'active'
                     LIMIT 1
                 """, (doc_id, user_id))
+                owned = cur.fetchone() is not None
+                if owned:
+                    return True
+
+                # Shared via project membership
+                cur.execute("""
+                    SELECT 1
+                    FROM documents d
+                    INNER JOIN project_documents pd ON pd.doc_id = d.doc_id
+                    INNER JOIN project_members pm ON pm.project_id = pd.project_id
+                    WHERE d.doc_id = %s AND d.status = 'active' AND pm.user_id = %s
+                    LIMIT 1
+                """, (doc_id, user_id))
+                return cur.fetchone() is not None
             else:
                 cur = conn.cursor()
                 placeholder = self.db_manager._get_placeholder()
+                # Direct ownership check
                 cur.execute(f"""
                     SELECT 1 FROM documents 
                     WHERE doc_id = {placeholder} AND user_id = {placeholder} AND status = 'active'
                     LIMIT 1
                 """, (doc_id, user_id))
-            
-            return cur.fetchone() is not None
+                owned = cur.fetchone() is not None
+                if owned:
+                    return True
+
+                # Shared via project membership
+                cur.execute(f"""
+                    SELECT 1
+                    FROM documents d
+                    INNER JOIN project_documents pd ON pd.doc_id = d.doc_id
+                    INNER JOIN project_members pm ON pm.project_id = pd.project_id
+                    WHERE d.doc_id = {placeholder} AND d.status = 'active' AND pm.user_id = {placeholder}
+                    LIMIT 1
+                """, (doc_id, user_id))
+                return cur.fetchone() is not None
             
         except Exception as e:
             print(f"Error validating user access: {e}")

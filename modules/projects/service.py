@@ -160,9 +160,10 @@ class ProjectService:
                 user = None
 
             member_entry = {
-                "user_id": member.user_id,
+                # Ensure types match frontend expectations
+                "user_id": str(member.user_id),
                 "role": member.role,
-                "joined_at": member.created_at
+                "joined_at": member.created_at.isoformat() if getattr(member, "created_at", None) else None
             }
 
             if user:
@@ -237,6 +238,29 @@ class ProjectService:
             except Exception:
                 owner = None
 
+            # Include project members
+            members = self.db.get_project_members(project.project_id)
+            member_info = []
+            for member in members:
+                try:
+                    user = self.db.get_user_by_id(member.user_id)
+                except Exception:
+                    user = None
+
+                m_entry = {
+                    "user_id": str(member.user_id),
+                    "role": member.role,
+                    "joined_at": member.created_at.isoformat() if getattr(member, "created_at", None) else None,
+                }
+                if user:
+                    m_entry["user"] = {
+                        "id": user.id,
+                        "firstname": user.firstname,
+                        "lastname": user.lastname,
+                        "profile_image": getattr(user, 'profile_image', None),
+                    }
+                member_info.append(m_entry)
+
             result.append({
                 "project_id": project.project_id,
                 "name": project.name,
@@ -247,6 +271,7 @@ class ProjectService:
                 "created_at": project.created_at,
                 "updated_at": project.updated_at,
                 "access": "owner",
+                "members": member_info if member_info else None,
             })
 
         for shared in shared_projects:
@@ -268,6 +293,29 @@ class ProjectService:
                 }
                 document_info.append(doc_info)
 
+            # Include project members
+            members = self.db.get_project_members(project.project_id)
+            member_info = []
+            for member in members:
+                try:
+                    user = self.db.get_user_by_id(member.user_id)
+                except Exception:
+                    user = None
+
+                m_entry = {
+                    "user_id": str(member.user_id),
+                    "role": member.role,
+                    "joined_at": member.created_at.isoformat() if getattr(member, "created_at", None) else None,
+                }
+                if user:
+                    m_entry["user"] = {
+                        "id": user.id,
+                        "firstname": user.firstname,
+                        "lastname": user.lastname,
+                        "profile_image": getattr(user, 'profile_image', None),
+                    }
+                member_info.append(m_entry)
+
             result.append({
                 "project_id": project.project_id,
                 "name": project.name,
@@ -278,7 +326,8 @@ class ProjectService:
                 "created_at": project.created_at,
                 "updated_at": project.updated_at,
                 "access": "shared",
-                "role": role
+                "role": role,
+                "members": member_info if member_info else None,
             })
 
         return result
@@ -318,6 +367,29 @@ class ProjectService:
             except Exception:
                 owner = None
 
+            # Include project members
+            members = self.db.get_project_members(project.project_id)
+            member_info = []
+            for member in members:
+                try:
+                    user = self.db.get_user_by_id(member.user_id)
+                except Exception:
+                    user = None
+
+                m_entry = {
+                    "user_id": str(member.user_id),
+                    "role": member.role,
+                    "joined_at": member.created_at.isoformat() if getattr(member, "created_at", None) else None,
+                }
+                if user:
+                    m_entry["user"] = {
+                        "id": user.id,
+                        "firstname": user.firstname,
+                        "lastname": user.lastname,
+                        "profile_image": getattr(user, 'profile_image', None),
+                    }
+                member_info.append(m_entry)
+
             result.append({
                 "project_id": project.project_id,
                 "name": project.name,
@@ -329,6 +401,7 @@ class ProjectService:
                 "updated_at": project.updated_at,
                 "access": "shared",
                 "role": role,
+                "members": member_info if member_info else None,
             })
 
         return result
