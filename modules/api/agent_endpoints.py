@@ -212,6 +212,19 @@ async def unified_agent(
     page_match = re.search(r'page\s+(\d+)', user_instruction.lower())
     if page_match:
         page_number = int(page_match.group(1))
+
+    # If no explicit page was requested, pick the best page using fast retrieval
+    prefetched_citations = None
+    if not page_match:
+        try:
+            quick = process_question_with_hybrid_search(doc_id, user_instruction)
+            if isinstance(quick, dict):
+                best = quick.get("most_referenced_page")
+                if isinstance(best, int) and best > 0:
+                    page_number = best
+                prefetched_citations = quick.get("citations") or None
+        except Exception as e:
+            print(f"DEBUG: quick page selection failed: {e}")
     
     # Resolve context for session management
     context_data = {'doc_id': doc_id}
@@ -303,12 +316,24 @@ Please handle this request using the most appropriate tool.
                     "citations": parsed_data.get("citations", []),
                     "most_referenced_page": parsed_data.get("most_referenced_page")
                 }
-                # Ensure citations are present for all non-annotation responses
+                # Prefer prefetched citations, otherwise ensure
                 if not response_content["citations"]:
-                    cits, mrp = _ensure_citations(doc_id, user_instruction, response_content["response"], page_number)
-                    response_content["citations"] = cits
-                    if not response_content.get("most_referenced_page"):
-                        response_content["most_referenced_page"] = mrp
+                    if prefetched_citations:
+                        # Deduplicate and cap
+                        seen = set()
+                        unique = []
+                        for c in prefetched_citations:
+                            key = f"{c.get('text')}:{c.get('page')}"
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            unique.append(c)
+                        response_content["citations"] = unique[:5]
+                    else:
+                        cits, mrp = _ensure_citations(doc_id, user_instruction, response_content["response"], page_number)
+                        response_content["citations"] = cits
+                        if not response_content.get("most_referenced_page"):
+                            response_content["most_referenced_page"] = mrp
                 return JSONResponse(content=response_content)
 
             # Case 3: It's some other JSON, treat as informational
@@ -343,9 +368,23 @@ Please handle this request using the most appropriate tool.
             session_manager.add_message_to_session(session_id, user_id, "assistant", answer_text)
 
             # Ensure citations are present for all non-annotation responses
-            cits, mrp = _ensure_citations(doc_id, user_instruction, answer_text, page_number)
-            response_content["citations"] = cits
-            response_content["most_referenced_page"] = mrp
+            if prefetched_citations:
+                # Deduplicate and cap
+                seen = set()
+                unique = []
+                for c in prefetched_citations:
+                    key = f"{c.get('text')}:{c.get('page')}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    unique.append(c)
+                response_content["citations"] = unique[:5]
+                if not response_content.get("most_referenced_page") and unique:
+                    response_content["most_referenced_page"] = unique[0].get("page")
+            else:
+                cits, mrp = _ensure_citations(doc_id, user_instruction, answer_text, page_number)
+                response_content["citations"] = cits
+                response_content["most_referenced_page"] = mrp
             return JSONResponse(content=response_content)
             
     except Exception as e:
@@ -467,6 +506,19 @@ async def unified_agent_for_project(
     page_match = re.search(r'page\s+(\d+)', user_instruction.lower())
     if page_match:
         page_number = int(page_match.group(1))
+
+    # If no page specified, choose best page via quick retrieval
+    prefetched_citations = None
+    if not page_match:
+        try:
+            quick = process_question_with_hybrid_search(final_doc_id, user_instruction)
+            if isinstance(quick, dict):
+                best = quick.get("most_referenced_page")
+                if isinstance(best, int) and best > 0:
+                    page_number = best
+                prefetched_citations = quick.get("citations") or None
+        except Exception as e:
+            print(f"DEBUG: quick page selection failed (project): {e}")
     
     # Resolve and validate context
     context_data = {'project_id': project_id, 'doc_id': final_doc_id}
@@ -562,10 +614,20 @@ Please handle this request using the most appropriate tool.
                 }
                 # Ensure citations are present for all non-annotation responses
                 if not response_content["citations"]:
-                    cits, mrp = _ensure_citations(final_doc_id, user_instruction, response_content["response"], page_number)
-                    response_content["citations"] = cits
-                    if not response_content.get("most_referenced_page"):
-                        response_content["most_referenced_page"] = mrp
+                    if prefetched_citations:
+                        seen = set(); unique = []
+                        for c in prefetched_citations:
+                            key = f"{c.get('text')}:{c.get('page')}"
+                            if key in seen: continue
+                            seen.add(key); unique.append(c)
+                        response_content["citations"] = unique[:5]
+                        if not response_content.get("most_referenced_page") and unique:
+                            response_content["most_referenced_page"] = unique[0].get("page")
+                    else:
+                        cits, mrp = _ensure_citations(final_doc_id, user_instruction, response_content["response"], page_number)
+                        response_content["citations"] = cits
+                        if not response_content.get("most_referenced_page"):
+                            response_content["most_referenced_page"] = mrp
                 return JSONResponse(content=response_content)
             
             else:
@@ -600,9 +662,19 @@ Please handle this request using the most appropriate tool.
             # Save plain text answer
             session_manager.add_message_to_session(session_id, user_id, "assistant", answer_text)
             # Ensure citations are present for all non-annotation responses
-            cits, mrp = _ensure_citations(final_doc_id, user_instruction, answer_text, page_number)
-            response_content["citations"] = cits
-            response_content["most_referenced_page"] = mrp
+            if prefetched_citations:
+                seen = set(); unique = []
+                for c in prefetched_citations:
+                    key = f"{c.get('text')}:{c.get('page')}"
+                    if key in seen: continue
+                    seen.add(key); unique.append(c)
+                response_content["citations"] = unique[:5]
+                if not response_content.get("most_referenced_page") and unique:
+                    response_content["most_referenced_page"] = unique[0].get("page")
+            else:
+                cits, mrp = _ensure_citations(final_doc_id, user_instruction, answer_text, page_number)
+                response_content["citations"] = cits
+                response_content["most_referenced_page"] = mrp
             return JSONResponse(content=response_content)
             
     except Exception as e:
