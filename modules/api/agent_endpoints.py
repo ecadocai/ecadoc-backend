@@ -127,9 +127,18 @@ def _ensure_citations(doc_id: str, question: str, answer_text, page_number: int)
         hybrid = process_question_with_hybrid_search(doc_id, question)
         if hybrid and isinstance(hybrid, dict):
             cits = hybrid.get("citations") or []
+            # Dedupe by text+page and cap
+            seen = set()
+            unique = []
+            for c in cits:
+                key = f"{c.get('text')}:{c.get('page')}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(c)
             mrp = hybrid.get("most_referenced_page")
-            if cits:
-                return cits, mrp
+            if unique:
+                return unique[:5], mrp
     except Exception as e:
         print(f"DEBUG: ensure_citations hybrid search failed: {e}")
 

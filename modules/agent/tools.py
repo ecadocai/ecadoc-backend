@@ -345,7 +345,19 @@ def process_question_with_hybrid_search(doc_id: str, question: str, include_sugg
                             "relevance_score": 0.8,
                             "doc_id": doc_id
                         })
-                # Find most referenced page
+                # Deduplicate citations by page+text to avoid repeats
+                seen = set()
+                unique_citations = []
+                for c in doc_citations:
+                    key = f"{c.get('doc_id')}:{c.get('page')}:{c.get('text')}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    unique_citations.append(c)
+                # Cap to a handful for UI
+                doc_citations = unique_citations[:5]
+
+                # Find most referenced page (after dedupe fallbacks to first)
                 page_counts = {}
                 for citation in doc_citations:
                     page = citation["page"]
