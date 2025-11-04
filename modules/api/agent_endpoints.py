@@ -160,6 +160,78 @@ def _ensure_citations(doc_id: str, question: str, answer_text, page_number: int)
     }]
     return placeholder, placeholder[0]["page"]
 
+
+def _filter_citations_to_best_page(citations: list, target_page: int = None, most_referenced_page: int = None):
+    """Dedupe citations and return only those that belong to the best page.
+
+    Best page priority: target_page (working page) > most_referenced_page > majority vote.
+    Returns (filtered_citations, best_page).
+    """
+    if not citations:
+        return [], most_referenced_page or target_page
+
+    # Dedupe by (text,page)
+    seen = set()
+    unique = []
+    for c in citations:
+        key = f"{c.get('text')}:{c.get('page')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(c)
+
+    # Decide best page
+    best = None
+    if isinstance(target_page, int) and target_page > 0:
+        best = target_page
+    elif isinstance(most_referenced_page, int) and most_referenced_page > 0:
+        best = most_referenced_page
+    else:
+        counts = {}
+        for c in unique:
+            p = c.get('page')
+            counts[p] = counts.get(p, 0) + 1
+        if counts:
+            best = max(counts.items(), key=lambda x: x[1])[0]
+
+    # Filter to best page, and normalize label
+    filtered = [c for c in unique if c.get('page') == best]
+    if not filtered:
+        filtered = unique[:1]
+
+    compact = []
+    seen_pages = set()
+    for c in filtered:
+        p = c.get('page', 1)
+        if p in seen_pages:
+            continue
+        seen_pages.add(p)
+        compact.append({
+            'id': len(compact) + 1,
+            'page': p,
+            'text': f'Page {p}',
+            'relevance_score': None,
+            'doc_id': c.get('doc_id')
+        })
+    return compact, (best or (compact[0]['page'] if compact else None))
+
+
+def _build_persisted_message(answer_text: str, citations: list) -> str:
+    """Append a compact, parseable citations JSON marker to the assistant message.
+
+    The client can parse and render citations from history while hiding the marker.
+    Format: <<CITATIONS:{json}>>
+    """
+    try:
+        minimal = [
+            {"page": int(c.get("page", 1)), "text": f"Page {int(c.get('page', 1))}"}
+            for c in citations or []
+        ]
+        marker = f"\n\n<<CITATIONS:{json.dumps(minimal)}>>"
+        return (answer_text or "").rstrip() + marker
+    except Exception:
+        return answer_text or ""
+
 router = APIRouter(prefix="/agent", tags=["agent"])
 
 @router.post("/unified")
@@ -302,10 +374,6 @@ Please handle this request using the most appropriate tool.
             # Case 2: It's a RAG/informational JSON format
             elif isinstance(parsed_data, dict) and 'answer' in parsed_data:
                 print("DEBUG: RAG JSON response detected.")
-                # Save the answer to history
-                session_manager.add_message_to_session(
-                    session_id, user_id, "assistant", parsed_data.get("answer", "No answer found.")
-                )
                 response_content = {
                     "response": parsed_data.get("answer", "No answer found."),
                     "session_id": session_id,
@@ -316,24 +384,22 @@ Please handle this request using the most appropriate tool.
                     "citations": parsed_data.get("citations", []),
                     "most_referenced_page": parsed_data.get("most_referenced_page")
                 }
-                # Prefer prefetched citations, otherwise ensure
+                # Prefer prefetched citations, otherwise ensure; then filter to best page
                 if not response_content["citations"]:
                     if prefetched_citations:
-                        # Deduplicate and cap
-                        seen = set()
-                        unique = []
-                        for c in prefetched_citations:
-                            key = f"{c.get('text')}:{c.get('page')}"
-                            if key in seen:
-                                continue
-                            seen.add(key)
-                            unique.append(c)
-                        response_content["citations"] = unique[:5]
+                        filtered, bestp = _filter_citations_to_best_page(prefetched_citations, page_number, response_content.get("most_referenced_page"))
+                        response_content["citations"] = filtered
+                        if not response_content.get("most_referenced_page"):
+                            response_content["most_referenced_page"] = bestp
                     else:
                         cits, mrp = _ensure_citations(doc_id, user_instruction, response_content["response"], page_number)
-                        response_content["citations"] = cits
+                        filtered, bestp = _filter_citations_to_best_page(cits, page_number, mrp)
+                        response_content["citations"] = filtered
                         if not response_content.get("most_referenced_page"):
-                            response_content["most_referenced_page"] = mrp
+                            response_content["most_referenced_page"] = bestp
+                # Persist message with citations marker
+                persisted = _build_persisted_message(response_content["response"], response_content.get("citations") or [])
+                session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
                 return JSONResponse(content=response_content)
 
             # Case 3: It's some other JSON, treat as informational
@@ -364,27 +430,21 @@ Please handle this request using the most appropriate tool.
                 "citations": [],
                 "most_referenced_page": None
             }
-            # Save plain text to history
-            session_manager.add_message_to_session(session_id, user_id, "assistant", answer_text)
-
-            # Ensure citations are present for all non-annotation responses
+            # Ensure citations are present; then filter to best page
             if prefetched_citations:
-                # Deduplicate and cap
-                seen = set()
-                unique = []
-                for c in prefetched_citations:
-                    key = f"{c.get('text')}:{c.get('page')}"
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    unique.append(c)
-                response_content["citations"] = unique[:5]
-                if not response_content.get("most_referenced_page") and unique:
-                    response_content["most_referenced_page"] = unique[0].get("page")
+                filtered, bestp = _filter_citations_to_best_page(prefetched_citations, page_number, response_content.get("most_referenced_page"))
+                response_content["citations"] = filtered
+                if not response_content.get("most_referenced_page"):
+                    response_content["most_referenced_page"] = bestp
             else:
                 cits, mrp = _ensure_citations(doc_id, user_instruction, answer_text, page_number)
-                response_content["citations"] = cits
-                response_content["most_referenced_page"] = mrp
+                filtered, bestp = _filter_citations_to_best_page(cits, page_number, mrp)
+                response_content["citations"] = filtered
+                response_content["most_referenced_page"] = bestp
+
+            # Persist message with citations marker
+            persisted = _build_persisted_message(response_content["response"], response_content.get("citations") or [])
+            session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
             return JSONResponse(content=response_content)
             
     except Exception as e:
@@ -596,10 +656,7 @@ Please handle this request using the most appropriate tool.
             # Case 2: RAG/informational JSON
             elif isinstance(parsed_data, dict) and 'answer' in parsed_data:
                 print("DEBUG: Project RAG JSON response detected.")
-                # Save the answer text
-                session_manager.add_message_to_session(
-                    session_id, user_id, "assistant", parsed_data.get("answer", "No answer found.")
-                )
+                # We'll persist after citations are finalized
                 response_content = {
                     "response": parsed_data.get("answer", "No answer found."),
                     "session_id": session_id,
@@ -612,22 +669,22 @@ Please handle this request using the most appropriate tool.
                     "most_referenced_page": parsed_data.get("most_referenced_page"),
                     "project_context": {"name": project["name"], "description": project["description"]}
                 }
-                # Ensure citations are present for all non-annotation responses
+                # Ensure citations are present; then filter to best page
                 if not response_content["citations"]:
                     if prefetched_citations:
-                        seen = set(); unique = []
-                        for c in prefetched_citations:
-                            key = f"{c.get('text')}:{c.get('page')}"
-                            if key in seen: continue
-                            seen.add(key); unique.append(c)
-                        response_content["citations"] = unique[:5]
-                        if not response_content.get("most_referenced_page") and unique:
-                            response_content["most_referenced_page"] = unique[0].get("page")
+                        filtered, bestp = _filter_citations_to_best_page(prefetched_citations, page_number, response_content.get("most_referenced_page"))
+                        response_content["citations"] = filtered
+                        if not response_content.get("most_referenced_page"):
+                            response_content["most_referenced_page"] = bestp
                     else:
                         cits, mrp = _ensure_citations(final_doc_id, user_instruction, response_content["response"], page_number)
-                        response_content["citations"] = cits
+                        filtered, bestp = _filter_citations_to_best_page(cits, page_number, mrp)
+                        response_content["citations"] = filtered
                         if not response_content.get("most_referenced_page"):
-                            response_content["most_referenced_page"] = mrp
+                            response_content["most_referenced_page"] = bestp
+                # Persist with citations marker
+                persisted = _build_persisted_message(response_content["response"], response_content.get("citations") or [])
+                session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
                 return JSONResponse(content=response_content)
             
             else:
@@ -659,22 +716,20 @@ Please handle this request using the most appropriate tool.
                 "most_referenced_page": None,
                 "project_context": {"name": project["name"], "description": project["description"]}
             }
-            # Save plain text answer
-            session_manager.add_message_to_session(session_id, user_id, "assistant", answer_text)
-            # Ensure citations are present for all non-annotation responses
+            # We'll persist after citations are finalized
+            # Ensure citations are present; then filter to best page
             if prefetched_citations:
-                seen = set(); unique = []
-                for c in prefetched_citations:
-                    key = f"{c.get('text')}:{c.get('page')}"
-                    if key in seen: continue
-                    seen.add(key); unique.append(c)
-                response_content["citations"] = unique[:5]
-                if not response_content.get("most_referenced_page") and unique:
-                    response_content["most_referenced_page"] = unique[0].get("page")
+                filtered, bestp = _filter_citations_to_best_page(prefetched_citations, page_number, response_content.get("most_referenced_page"))
+                response_content["citations"] = filtered
+                if not response_content.get("most_referenced_page"):
+                    response_content["most_referenced_page"] = bestp
             else:
                 cits, mrp = _ensure_citations(final_doc_id, user_instruction, answer_text, page_number)
-                response_content["citations"] = cits
-                response_content["most_referenced_page"] = mrp
+                filtered, bestp = _filter_citations_to_best_page(cits, page_number, mrp)
+                response_content["citations"] = filtered
+                response_content["most_referenced_page"] = bestp
+            persisted = _build_persisted_message(response_content["response"], response_content.get("citations") or [])
+            session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
             return JSONResponse(content=response_content)
             
     except Exception as e:
