@@ -247,6 +247,7 @@ async def unified_agent(
     The agent automatically determines intent and extracts page information from the instruction.
     """
     # Verify document exists in database
+    trace_steps = []
     try:
         doc_info = pdf_processor.get_document_info(doc_id)
     except FileNotFoundError:
@@ -284,6 +285,7 @@ async def unified_agent(
     page_match = re.search(r'page\s+(\d+)', user_instruction.lower())
     if page_match:
         page_number = int(page_match.group(1))
+        trace_steps.append(f"Detected page {page_number}")
 
     # If no explicit page was requested, pick the best page using fast retrieval
     prefetched_citations = None
@@ -294,7 +296,10 @@ async def unified_agent(
                 best = quick.get("most_referenced_page")
                 if isinstance(best, int) and best > 0:
                     page_number = best
+                    trace_steps.append(f"Selected best page {best}")
                 prefetched_citations = quick.get("citations") or None
+                if prefetched_citations:
+                    trace_steps.append("Prefetched citations")
         except Exception as e:
             print(f"DEBUG: quick page selection failed: {e}")
     
@@ -340,6 +345,7 @@ Please handle this request using the most appropriate tool.
     
     try:
         print(f"DEBUG: Starting unified agent for doc {doc_id} with instruction: {user_instruction}")
+        trace_steps.append("Generating answer")
         final_state = agent_workflow.process_request(initial_state)
         final_msg = final_state["messages"][-1].content
 
@@ -369,6 +375,8 @@ Please handle this request using the most appropriate tool.
                 }
                 if 'coordinate_space' in parsed_data:
                     response_data['coordinate_space'] = parsed_data['coordinate_space']
+                trace_steps.append("Generated annotations")
+                response_data["trace"] = trace_steps
                 return JSONResponse(content=response_data)
             
             # Case 2: It's a RAG/informational JSON format
@@ -400,6 +408,11 @@ Please handle this request using the most appropriate tool.
                 # Persist message with citations marker
                 persisted = _build_persisted_message(response_content["response"], response_content.get("citations") or [])
                 session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
+                if response_content.get("citations"):
+                    trace_steps.append("Attached citations")
+                if response_content.get("suggestions"):
+                    trace_steps.append("Prepared suggestions")
+                response_content["trace"] = trace_steps
                 return JSONResponse(content=response_content)
 
             # Case 3: It's some other JSON, treat as informational
@@ -445,6 +458,11 @@ Please handle this request using the most appropriate tool.
             # Persist message with citations marker
             persisted = _build_persisted_message(response_content["response"], response_content.get("citations") or [])
             session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
+            if response_content.get("citations"):
+                trace_steps.append("Attached citations")
+            if response_content.get("suggestions"):
+                trace_steps.append("Prepared suggestions")
+            response_content["trace"] = trace_steps
             return JSONResponse(content=response_content)
             
     except Exception as e:
@@ -516,6 +534,7 @@ async def unified_agent_for_project(
     Automatically extracts the document from the project and provides project context.
     """
     # Validate project access
+    trace_steps = []
     if not project_service.validate_project_access(project_id, user_id):
         raise HTTPException(403, detail="Access denied or project not found")
     
@@ -566,6 +585,7 @@ async def unified_agent_for_project(
     page_match = re.search(r'page\s+(\d+)', user_instruction.lower())
     if page_match:
         page_number = int(page_match.group(1))
+        trace_steps.append(f"Detected page {page_number}")
 
     # If no page specified, choose best page via quick retrieval
     prefetched_citations = None
@@ -576,7 +596,10 @@ async def unified_agent_for_project(
                 best = quick.get("most_referenced_page")
                 if isinstance(best, int) and best > 0:
                     page_number = best
+                    trace_steps.append(f"Selected best page {best}")
                 prefetched_citations = quick.get("citations") or None
+                if prefetched_citations:
+                    trace_steps.append("Prefetched citations")
         except Exception as e:
             print(f"DEBUG: quick page selection failed (project): {e}")
     
@@ -621,6 +644,7 @@ Please handle this request using the most appropriate tool.
     
     try:
         print(f"DEBUG: Starting project agent for project {project_id}, doc {final_doc_id}")
+        trace_steps.append("Generating answer")
         final_state = agent_workflow.process_request(initial_state)
         final_msg = final_state["messages"][-1].content
         
@@ -651,6 +675,8 @@ Please handle this request using the most appropriate tool.
                 }
                 if 'coordinate_space' in parsed_data:
                     response_data['coordinate_space'] = parsed_data['coordinate_space']
+                trace_steps.append("Generated annotations")
+                response_data["trace"] = trace_steps
                 return JSONResponse(content=response_data)
             
             # Case 2: RAG/informational JSON
@@ -685,6 +711,11 @@ Please handle this request using the most appropriate tool.
                 # Persist with citations marker
                 persisted = _build_persisted_message(response_content["response"], response_content.get("citations") or [])
                 session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
+                if response_content.get("citations"):
+                    trace_steps.append("Attached citations")
+                if response_content.get("suggestions"):
+                    trace_steps.append("Prepared suggestions")
+                response_content["trace"] = trace_steps
                 return JSONResponse(content=response_content)
             
             else:
@@ -730,6 +761,11 @@ Please handle this request using the most appropriate tool.
                 response_content["most_referenced_page"] = bestp
             persisted = _build_persisted_message(response_content["response"], response_content.get("citations") or [])
             session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
+            if response_content.get("citations"):
+                trace_steps.append("Attached citations")
+            if response_content.get("suggestions"):
+                trace_steps.append("Prepared suggestions")
+            response_content["trace"] = trace_steps
             return JSONResponse(content=response_content)
             
     except Exception as e:
