@@ -28,9 +28,18 @@ CLIENT = InferenceHTTPClient(
     api_key=settings.ROBOFLOW_API_KEY
 )
 
-# Initialize tokenizer for chunking
-# Use model name from settings so tokenizer model can be configured via OPENAI_MODEL
-tokenizer = tiktoken.encoding_for_model(settings.OPENAI_MODEL)
+# Initialize tokenizer for chunking with robust fallback
+try:
+    tokenizer = tiktoken.encoding_for_model(settings.OPENAI_MODEL)
+except Exception:
+    try:
+        tokenizer = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        # Last resort minimal stub to avoid crashes; counts chars
+        class _StubTok:
+            def encode(self, s):
+                return list(s)
+        tokenizer = _StubTok()
 
 @lru_cache(maxsize=8)
 def _get_llm_cached(model: str, temperature: float) -> ChatOpenAI:
@@ -276,7 +285,13 @@ def should_use_internet_search(question: str) -> bool:
     return False
 
 def process_question_with_hybrid_search(doc_id: str, question: str, include_suggestions: bool = False) -> Dict:
-    """Process question using both document RAG and internet search for comprehensive answers with concurrent processing."""
+    """Fast path retrieval used primarily for generating citations.
+
+    When include_suggestions is False (default), this function avoids expensive
+    LLM summarization and visual analysis and focuses on retrieving top chunks
+    quickly to build citations. This significantly reduces latency for fallback
+    citation generation.
+    """
     doc_content = ""
     web_content = ""
     citations = []
@@ -299,7 +314,7 @@ def process_question_with_hybrid_search(doc_id: str, question: str, include_sugg
             print(f"DEBUG: Retrieving document content for: {question}")
             docs = None
             if getattr(pdf_processor, 'use_database_storage', False):
-                docs = pdf_processor.query_document_vectors(doc_id, question, k=8)
+                docs = pdf_processor.query_document_vectors(doc_id, question, k=5)
                 # docs is a list of dicts with 'page' and 'text'
             else:
                 vs = pdf_processor.load_vectorstore(doc_id)
@@ -311,18 +326,22 @@ def process_question_with_hybrid_search(doc_id: str, question: str, include_sugg
                 doc_citations = []
                 for i, doc in enumerate(docs):
                     if isinstance(doc, dict):
+                        pg = int(doc.get("page", 1))
+                        label = f"Page {pg}"
                         doc_citations.append({
                             "id": i + 1,
-                            "page": doc.get("page", 1),
-                            "text": doc.get("text", "")[:500] if doc.get("text") else "",
+                            "page": pg,
+                            "text": label,
                             "relevance_score": 0.8,
                             "doc_id": doc_id
                         })
                     else:
+                        pg = int(doc.metadata.get("page", 1))
+                        label = f"Page {pg}"
                         doc_citations.append({
                             "id": i + 1,
-                            "page": doc.metadata.get("page", 1),
-                            "text": doc.page_content[:500] if doc.page_content else "",
+                            "page": pg,
+                            "text": label,
                             "relevance_score": 0.8,
                             "doc_id": doc_id
                         })
@@ -335,11 +354,13 @@ def process_question_with_hybrid_search(doc_id: str, question: str, include_sugg
                 if page_counts:
                     doc_most_referenced = max(page_counts.items(), key=lambda x: x[1])[0]
                 
-                # Format document content
-                context = "\n\n".join([f"Page {d.metadata.get('page', 'N/A')}: {d.page_content}" for d in docs])
+                # Format document content (only if we plan to summarize)
+                context = None
+                if include_suggestions:
+                    context = "\n\n".join([f"Page {d.metadata.get('page', 'N/A')}: {d.page_content}" for d in docs])
                 
                 # Check if visual analysis is needed for pages with minimal text
-                visual_analysis_needed = any(keyword in question.lower() for keyword in [
+                visual_analysis_needed = include_suggestions and any(keyword in question.lower() for keyword in [
                     'layout', 'arrangement', 'position', 'where', 'located', 'diagram', 'drawing', 
                     'plan', 'design', 'visual', 'look', 'appearance', 'orientation', 'spatial', 
                     'show', 'see', 'view', 'display', 'illustrate', 'color', 'shape', 'size'
@@ -381,38 +402,36 @@ def process_question_with_hybrid_search(doc_id: str, question: str, include_sugg
                         print(f"DEBUG: Error in visual analysis setup: {e}")
                 
                 # Combine text and visual content
-                enhanced_context = context
-                if multimodal_analysis:
+                enhanced_context = context or ""
+                if multimodal_analysis and enhanced_context:
                     enhanced_context += f"\n\nAdditional visual insights:{multimodal_analysis}"
                 
                 # Handle chunking if necessary (smaller chunks for speed)
-                chunks = chunk_context_for_processing(enhanced_context, question, max_chunk_tokens=3000)
-                
-                if len(chunks) == 1:
-                    doc_result["content"] = chunks[0]['chunk']
-                else:
-                    # Process multiple chunks quickly
-                    chunk_responses = []
-                    llm = _get_llm_cached(settings.OPENAI_MODEL, 0.0)
-                    
-                    for chunk_info in chunks[:3]:  # Limit to 3 chunks for speed
-                        prompt = f"""Extract key information from this document section for: {question}
+                if include_suggestions and enhanced_context:
+                    # Only summarize when suggestions or full answer is desired
+                    chunks = chunk_context_for_processing(enhanced_context, question, max_chunk_tokens=3000)
+                    if len(chunks) == 1:
+                        doc_result["content"] = chunks[0]['chunk']
+                    else:
+                        # Process multiple chunks quickly
+                        chunk_responses = []
+                        llm = _get_llm_cached(settings.OPENAI_MODEL, 0.0)
+                        for chunk_info in chunks[:3]:  # Limit to 3 chunks for speed
+                            prompt = f"""Extract key information from this document section for: {question}
 
 Section:
 {chunk_info['chunk']}
 
 Provide only relevant information (max 2 sentences). If no relevant info, respond "No relevant information.":"""
-                        
-                        try:
-                            chunk_response = llm.invoke(prompt)
-                            if "No relevant information" not in chunk_response.content:
-                                chunk_responses.append(chunk_response.content)
-                        except Exception as e:
-                            print(f"DEBUG: Error processing document chunk: {e}")
-                            continue
-                    
-                    if chunk_responses:
-                        doc_result["content"] = "\n\n".join(chunk_responses)
+                            try:
+                                chunk_response = llm.invoke(prompt)
+                                if "No relevant information" not in chunk_response.content:
+                                    chunk_responses.append(chunk_response.content)
+                            except Exception as e:
+                                print(f"DEBUG: Error processing document chunk: {e}")
+                                continue
+                        if chunk_responses:
+                            doc_result["content"] = "\n\n".join(chunk_responses)
                 
                 doc_result["citations"] = doc_citations
                 doc_result["most_referenced_page"] = doc_most_referenced
@@ -464,6 +483,17 @@ Provide only relevant information (max 2 sentences). If no relevant info, respon
                     "description": f"Additional information on page {page_num}."
                 })
         
+        # If we were called only for citations (default path), skip answer LLM
+        if not include_suggestions:
+            return {
+                "answer": "",
+                "suggestions": [],
+                "citations": citations,
+                "most_referenced_page": most_referenced_page,
+                "has_document_content": bool(doc_content),
+                "has_web_content": bool(web_content)
+            }
+
         # Create comprehensive answer with timeout protection
         try:
             comprehensive_answer = create_comprehensive_answer(doc_content, web_content, question, citations)
@@ -500,10 +530,11 @@ Provide only relevant information (max 2 sentences). If no relevant info, respon
             if getattr(pdf_processor, 'use_database_storage', False):
                 docs = pdf_processor.query_document_vectors(doc_id, question, k=3)
                 for i, doc in enumerate(docs[:3]):
+                    pg = int(doc.get("page", 1))
                     fallback_citations.append({
                         "id": i + 1,
-                        "page": doc.get("page", 1),
-                        "text": doc.get("text", "")[:200] + "...",
+                        "page": pg,
+                        "text": f"Page {pg}",
                         "relevance_score": 0.5,
                         "doc_id": doc_id
                     })
@@ -551,7 +582,7 @@ def load_pdf_for_floorplan(pdf_path: str) -> str:
         return f"Error loading PDF: {str(e)}"
 
 @tool
-def convert_pdf_page_to_image(pdf_path: str, page: int = 1, dpi: int = 300) -> str:
+def convert_pdf_page_to_image(pdf_path: str, page: int = 1, dpi: int = 200) -> str:
     """Convert a specific page of a PDF to a temporary image file for processing."""
     try:
         if not os.path.exists(pdf_path):

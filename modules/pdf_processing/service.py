@@ -14,6 +14,7 @@ from langchain_core.documents import Document
 
 from modules.config.settings import settings
 from modules.database.models import db_manager
+from modules.cache.document_cache import document_cache_manager
 
 class PDFProcessor:
     """PDF processing and indexing service"""
@@ -177,6 +178,15 @@ class PDFProcessor:
         if not self.use_database_storage:
             raise Exception("Document content retrieval only available with database storage")
         
+        # Try cache first (avoids DB hit and tempfile writes on repeat)
+        try:
+            cached = await_like(document_cache_manager.get_document_content, doc_id)
+            if cached:
+                return cached
+        except Exception:
+            # Never fail due to cache issues
+            pass
+
         document = db_manager.get_document_by_doc_id(doc_id)
         if not document:
             raise FileNotFoundError("Document not found")
@@ -185,8 +195,14 @@ class PDFProcessor:
         if not file_storage:
             raise FileNotFoundError("Document file not found")
         
-        return file_storage.file_data
-    
+        content = file_storage.file_data
+        # Cache content on best-effort basis
+        try:
+            run_awaitable(document_cache_manager.cache_document_content, doc_id, content)
+        except Exception:
+            pass
+        return content
+
     def query_document_vectors(self, doc_id: str, question: str, k: int = 5) -> List[Dict[str, Any]]:
         """Query document using database vector storage"""
         if not self.use_database_storage:
@@ -783,3 +799,29 @@ class PDFProcessor:
 
 # Global PDF processor instance
 pdf_processor = PDFProcessor()
+
+# Small helpers to call async cache from sync context without changing call sites
+def await_like(coro_func, *args, **kwargs):
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        # Running inside an event loop; schedule and wait briefly
+        return asyncio.run_coroutine_threadsafe(coro_func(*args, **kwargs), loop).result(timeout=0.5)
+    else:
+        import asyncio as _asyncio
+        return _asyncio.run(coro_func(*args, **kwargs))
+
+def run_awaitable(coro_func, *args, **kwargs):
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(coro_func(*args, **kwargs), loop)
+    else:
+        import asyncio as _asyncio
+        _asyncio.run(coro_func(*args, **kwargs))

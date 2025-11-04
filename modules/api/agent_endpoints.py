@@ -69,7 +69,7 @@ def parse_citations_from_text(text: str, doc_id: str = None) -> tuple:
                 citations.append({
                     "id": idx,
                     "page": page,
-                    "text": line.strip()[:500],
+                    "text": f"Page {page}",
                     "relevance_score": None,
                     "doc_id": doc_id
                 })
@@ -103,7 +103,7 @@ def parse_citations_from_text(text: str, doc_id: str = None) -> tuple:
         citations.append({
             "id": cit_id,
             "page": page,
-            "text": line.strip()[:500],
+            "text": f"Page {page}",
             "relevance_score": None,
             "doc_id": doc_id
         })
@@ -113,6 +113,43 @@ def parse_citations_from_text(text: str, doc_id: str = None) -> tuple:
         most_referenced_page = max(page_counts.items(), key=lambda x: x[1])[0]
 
     return citations, most_referenced_page
+
+
+def _ensure_citations(doc_id: str, question: str, answer_text, page_number: int):
+    """Best-effort citation generator that guarantees a non-empty list.
+
+    Order of attempts:
+    1) Hybrid search (preferred)
+    2) Parse inline citations from text (fallback)
+    3) Minimal placeholder citation pointing to the working page
+    """
+    try:
+        hybrid = process_question_with_hybrid_search(doc_id, question)
+        if hybrid and isinstance(hybrid, dict):
+            cits = hybrid.get("citations") or []
+            mrp = hybrid.get("most_referenced_page")
+            if cits:
+                return cits, mrp
+    except Exception as e:
+        print(f"DEBUG: ensure_citations hybrid search failed: {e}")
+
+    try:
+        if answer_text:
+            parsed_citations, parsed_most = parse_citations_from_text(answer_text, doc_id=doc_id)
+            if parsed_citations:
+                return parsed_citations, parsed_most
+    except Exception as e:
+        print(f"DEBUG: ensure_citations parse failed: {e}")
+
+    # Final guaranteed placeholder
+    placeholder = [{
+        "id": 1,
+        "page": int(page_number) if page_number else 1,
+        "text": f"Page {int(page_number) if page_number else 1}",
+        "relevance_score": None,
+        "doc_id": doc_id,
+    }]
+    return placeholder, placeholder[0]["page"]
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -257,18 +294,12 @@ Please handle this request using the most appropriate tool.
                     "citations": parsed_data.get("citations", []),
                     "most_referenced_page": parsed_data.get("most_referenced_page")
                 }
-                # If the agent returned no citations, try to fetch them separately
-                try:
-                    if not response_content["citations"]:
-                        print("DEBUG: No citations found in agent response, attempting to generate citations separately.")
-                        hybrid = process_question_with_hybrid_search(doc_id, user_instruction)
-                        if hybrid and isinstance(hybrid, dict):
-                            response_content["citations"] = hybrid.get("citations", [])
-                            # Only override most_referenced_page if we found one
-                            if hybrid.get("most_referenced_page"):
-                                response_content["most_referenced_page"] = hybrid.get("most_referenced_page")
-                except Exception as e:
-                    print(f"DEBUG: Failed to generate fallback citations: {e}")
+                # Ensure citations are present for all non-annotation responses
+                if not response_content["citations"]:
+                    cits, mrp = _ensure_citations(doc_id, user_instruction, response_content["response"], page_number)
+                    response_content["citations"] = cits
+                    if not response_content.get("most_referenced_page"):
+                        response_content["most_referenced_page"] = mrp
                 return JSONResponse(content=response_content)
 
             # Case 3: It's some other JSON, treat as informational
@@ -302,21 +333,10 @@ Please handle this request using the most appropriate tool.
             # Save plain text to history
             session_manager.add_message_to_session(session_id, user_id, "assistant", answer_text)
 
-            # Prefer generating citations from the document instead of parsing the chat text
-            try:
-                hybrid = process_question_with_hybrid_search(doc_id, user_instruction)
-                if hybrid and isinstance(hybrid, dict) and hybrid.get("citations"):
-                    response_content["citations"] = hybrid.get("citations", [])
-                    if hybrid.get("most_referenced_page"):
-                        response_content["most_referenced_page"] = hybrid.get("most_referenced_page")
-                else:
-                    # Fallback: attempt to parse any inline citations in the answer text
-                    parsed_citations, parsed_most = parse_citations_from_text(answer_text, doc_id=doc_id)
-                    if parsed_citations:
-                        response_content["citations"] = parsed_citations
-                        response_content["most_referenced_page"] = parsed_most
-            except Exception as e:
-                print(f"DEBUG: Failed to generate citations for plain-text response: {e}")
+            # Ensure citations are present for all non-annotation responses
+            cits, mrp = _ensure_citations(doc_id, user_instruction, answer_text, page_number)
+            response_content["citations"] = cits
+            response_content["most_referenced_page"] = mrp
             return JSONResponse(content=response_content)
             
     except Exception as e:
@@ -531,17 +551,12 @@ Please handle this request using the most appropriate tool.
                     "most_referenced_page": parsed_data.get("most_referenced_page"),
                     "project_context": {"name": project["name"], "description": project["description"]}
                 }
-                # If the agent returned no citations, attempt to fetch them separately
-                try:
-                    if not response_content["citations"]:
-                        print("DEBUG: No citations found in project agent response, attempting to generate citations separately.")
-                        hybrid = process_question_with_hybrid_search(final_doc_id, user_instruction)
-                        if hybrid and isinstance(hybrid, dict):
-                            response_content["citations"] = hybrid.get("citations", [])
-                            if hybrid.get("most_referenced_page"):
-                                response_content["most_referenced_page"] = hybrid.get("most_referenced_page")
-                except Exception as e:
-                    print(f"DEBUG: Failed to generate fallback project citations: {e}")
+                # Ensure citations are present for all non-annotation responses
+                if not response_content["citations"]:
+                    cits, mrp = _ensure_citations(final_doc_id, user_instruction, response_content["response"], page_number)
+                    response_content["citations"] = cits
+                    if not response_content.get("most_referenced_page"):
+                        response_content["most_referenced_page"] = mrp
                 return JSONResponse(content=response_content)
             
             else:
@@ -575,21 +590,10 @@ Please handle this request using the most appropriate tool.
             }
             # Save plain text answer
             session_manager.add_message_to_session(session_id, user_id, "assistant", answer_text)
-            # Prefer generating citations from the document instead of parsing the chat text
-            try:
-                hybrid = process_question_with_hybrid_search(final_doc_id, user_instruction)
-                if hybrid and isinstance(hybrid, dict) and hybrid.get("citations"):
-                    response_content["citations"] = hybrid.get("citations", [])
-                    if hybrid.get("most_referenced_page"):
-                        response_content["most_referenced_page"] = hybrid.get("most_referenced_page")
-                else:
-                    # Fallback: attempt to parse inline citations in the answer text
-                    parsed_citations, parsed_most = parse_citations_from_text(answer_text, doc_id=final_doc_id)
-                    if parsed_citations:
-                        response_content["citations"] = parsed_citations
-                        response_content["most_referenced_page"] = parsed_most
-            except Exception as e:
-                print(f"DEBUG: Failed to generate citations for plain-text project response: {e}")
+            # Ensure citations are present for all non-annotation responses
+            cits, mrp = _ensure_citations(final_doc_id, user_instruction, answer_text, page_number)
+            response_content["citations"] = cits
+            response_content["most_referenced_page"] = mrp
             return JSONResponse(content=response_content)
             
     except Exception as e:

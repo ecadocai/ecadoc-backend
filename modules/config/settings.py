@@ -19,7 +19,8 @@ class Settings:
     # OpenAI Configuration
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
     # OpenAI model to use for Chat/OpenAI clients (configurable via env var OPENAI_MODEL)
-    OPENAI_MODEL = os.getenv('OPENAI_MODEL')
+    # Prefer a faster, multimodal-capable default to reduce latency
+    OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
     
     # Google OAuth Configuration
     GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
