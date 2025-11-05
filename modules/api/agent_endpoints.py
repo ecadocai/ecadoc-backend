@@ -275,7 +275,11 @@ async def unified_agent(
     # Handle small-talk and capability queries directly (no citations, no retrieval)
     if _is_smalltalk(user_instruction):
         reply = "Hello! I'm Ecadoc AI, an intelligent blueprint assistant. How can I help with your document?"
-        session_manager.add_message_to_session(session_id or "", user_id, "assistant", reply)
+        try:
+            if session_id and session_manager.validate_session_access(session_id, user_id):
+                session_manager.add_message_to_session(session_id, user_id, "assistant", reply)
+        except Exception:
+            pass
         total_ms = int((time.time()-req_start)*1000)
         log_metric("unified_respond", user_id=user_id, session_id=session_id or "", doc_id=doc_id, type="smalltalk", total_ms=total_ms)
         return JSONResponse(content={
@@ -295,7 +299,11 @@ async def unified_agent(
             "• Answer questions about notes, legends, and specs.\n"
             "• Search for current info when asked (codes, prices)."
         )
-        session_manager.add_message_to_session(session_id or "", user_id, "assistant", reply)
+        try:
+            if session_id and session_manager.validate_session_access(session_id, user_id):
+                session_manager.add_message_to_session(session_id, user_id, "assistant", reply)
+        except Exception:
+            pass
         total_ms = int((time.time()-req_start)*1000)
         log_metric("unified_respond", user_id=user_id, session_id=session_id or "", doc_id=doc_id, type="capabilities", total_ms=total_ms)
         return JSONResponse(content={
@@ -386,7 +394,10 @@ async def unified_agent(
     
     # Fast path: explicit page summarization (keep citations to that page)
     if re.search(r"\b(summarize|summary|summarise)\b", user_instruction.lower()) and page_match:
-        summary = summarize_page_text(doc_id, page_number)
+        try:
+            summary = summarize_page_text.invoke({"doc_id": doc_id, "page_number": page_number})
+        except Exception:
+            summary = summarize_page_text(doc_id, page_number) if callable(summarize_page_text) else ""
         citations = [{
             "id": 1,
             "page": page_number,
@@ -740,7 +751,10 @@ Please handle this request using the most appropriate tool.
     
     # Fast path: explicit page summarization with citation
     if re.search(r"\b(summarize|summary|summarise)\b", user_instruction.lower()) and page_match:
-        summary = summarize_page_text(final_doc_id, page_number)
+        try:
+            summary = summarize_page_text.invoke({"doc_id": final_doc_id, "page_number": page_number})
+        except Exception:
+            summary = summarize_page_text(final_doc_id, page_number) if callable(summarize_page_text) else ""
         citations = [{
             "id": 1,
             "page": page_number,
