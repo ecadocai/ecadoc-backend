@@ -1013,6 +1013,7 @@ def warm_page_cache(pdf_path: str, doc_id: str, pages: list[int], dpi: int = 144
             except Exception:
                 continue
 
+@tool
 def analyze_pdf_page_multimodal(doc_id: str, page_number: int = 1) -> str:
     """Optimized multimodal analysis of a PDF page using both text and visual analysis.
 
