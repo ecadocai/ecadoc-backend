@@ -955,7 +955,6 @@ Provide a helpful and accurate answer:"""
         print(f"DEBUG: Error in document RAG: {e}")
         return f"I encountered an error while processing your question. Please try rephrasing your question or check if the document is properly loaded."
 
-@tool
 def _jpeg_cache_path(doc_id: str, page_number: int, dpi: int = 144) -> str:
     from modules.config.settings import settings
     os.makedirs(settings.IMAGES_DIR, exist_ok=True)
