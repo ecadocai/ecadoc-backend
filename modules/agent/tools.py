@@ -987,7 +987,6 @@ def analyze_pdf_page_multimodal(doc_id: str, page_number: int = 1) -> str:
             return f"Error: PDF file not found for document {doc_id}"
             
         # OPTIMIZATION: Cache a grayscale JPEG render at ~180 DPI
-        import os
         from modules.config.settings import settings
         os.makedirs(settings.IMAGES_DIR, exist_ok=True)
         cache_jpg = os.path.join(settings.IMAGES_DIR, f"{doc_id}_p{page_number}_d180.jpg")
@@ -1057,13 +1056,7 @@ def analyze_pdf_page_multimodal(doc_id: str, page_number: int = 1) -> str:
         message = HumanMessage(content=message_content)
         response = llm.invoke([message])
         
-        # Clean up temporary image file
-        try:
-            if os.path.exists(temp_image_path):
-                os.remove(temp_image_path)
-                print(f"DEBUG: Cleaned up temporary image: {temp_image_path}")
-        except Exception as cleanup_error:
-            print(f"DEBUG: Could not clean up temporary image {temp_image_path}: {cleanup_error}")
+        # Do not delete cached JPEG (kept for future requests)
         
         # Clean up temporary PDF file if it was created for database storage
         if doc_info.get("storage_type") == "database" and pdf_path:
