@@ -380,12 +380,6 @@ Please handle this request using the most appropriate tool.
             }
             if 'coordinate_space' in parsed_data:
                 response_data['coordinate_space'] = parsed_data['coordinate_space']
-            if 'download_url' in parsed_data:
-                response_data['download_url'] = parsed_data['download_url']
-            if 'annotated_file_id' in parsed_data:
-                response_data['annotated_file_id'] = parsed_data['annotated_file_id']
-            if 'annotated_file_path' in parsed_data:
-                response_data['annotated_file_path'] = parsed_data['annotated_file_path']
             yield _sse_event("final", response_data)
             yield _sse_event("done", {"ok": True})
             return
