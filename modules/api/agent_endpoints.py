@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import HumanMessage
 
 from modules.config.settings import settings
-from modules.config.utils import delete_file_after_delay
+from modules.config.utils import delete_file_after_delay, log_metric
 from modules.pdf_processing.service import pdf_processor
 from modules.database import db_manager
 from modules.agent import agent_workflow
@@ -234,6 +234,28 @@ def _build_persisted_message(answer_text: str, citations: list) -> str:
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
+def _is_smalltalk(text: str) -> bool:
+    """Detect greetings/identity/small-talk where citations are not useful."""
+    if not text:
+        return False
+    t = text.strip().lower()
+    small_phrases = (
+        "hi", "hello", "hey", "yo", "sup", "what's up", "whats up", "how are you",
+        "good morning", "good afternoon", "good evening", "who are you", "who r u",
+        "thanks", "thank you", "ok", "okay", "cool", "great", "awesome"
+    )
+    return any(p in t for p in small_phrases)
+
+def _is_capabilities(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip().lower()
+    phrases = (
+        "what can you do", "what do you do", "how can you help",
+        "capabilities", "features", "help menu", "what are your features",
+    )
+    return any(p in t for p in phrases)
+
 @router.post("/unified")
 async def unified_agent(
     background_tasks: BackgroundTasks,
@@ -246,6 +268,45 @@ async def unified_agent(
     Single unified endpoint that intelligently handles both chat and annotation workflows.
     The agent automatically determines intent and extracts page information from the instruction.
     """
+    # Metrics: request start
+    req_start = time.time()
+    log_metric("unified_request_start", user_id=user_id, session_id=session_id or "", doc_id=doc_id, text_len=len(user_instruction or ""))
+    
+    # Handle small-talk and capability queries directly (no citations, no retrieval)
+    if _is_smalltalk(user_instruction):
+        reply = "Hello! I'm Ecadoc AI, an intelligent blueprint assistant. How can I help with your document?"
+        session_manager.add_message_to_session(session_id or "", user_id, "assistant", reply)
+        total_ms = int((time.time()-req_start)*1000)
+        log_metric("unified_respond", user_id=user_id, session_id=session_id or "", doc_id=doc_id, type="smalltalk", total_ms=total_ms)
+        return JSONResponse(content={
+            "response": reply,
+            "session_id": session_id,
+            "doc_id": doc_id,
+            "type": "information",
+            "suggestions": [],
+            "citations": []
+        })
+    if _is_capabilities(user_instruction):
+        reply = (
+            "I can:\n\n"
+            "• Visually annotate floor plans (highlight, circle, count).\n"
+            "• Measure dimensions and areas, calibrated if needed.\n"
+            "• Describe page layout and where elements are located.\n"
+            "• Answer questions about notes, legends, and specs.\n"
+            "• Search for current info when asked (codes, prices)."
+        )
+        session_manager.add_message_to_session(session_id or "", user_id, "assistant", reply)
+        total_ms = int((time.time()-req_start)*1000)
+        log_metric("unified_respond", user_id=user_id, session_id=session_id or "", doc_id=doc_id, type="capabilities", total_ms=total_ms)
+        return JSONResponse(content={
+            "response": reply,
+            "session_id": session_id,
+            "doc_id": doc_id,
+            "type": "information",
+            "suggestions": [],
+            "citations": []
+        })
+
     # Verify document exists in database
     try:
         doc_info = pdf_processor.get_document_info(doc_id)
@@ -287,6 +348,7 @@ async def unified_agent(
 
     # If no explicit page was requested, pick the best page using fast retrieval
     prefetched_citations = None
+    preselect_start = time.time()
     if not page_match:
         try:
             quick = process_question_with_hybrid_search(doc_id, user_instruction)
@@ -297,6 +359,7 @@ async def unified_agent(
                 prefetched_citations = quick.get("citations") or None
         except Exception as e:
             print(f"DEBUG: quick page selection failed: {e}")
+    log_metric("unified_preselect_done", user_id=user_id, session_id=session_id or "", doc_id=doc_id, page=page_number, preselect_ms=int((time.time()-preselect_start)*1000))
     
     # Resolve context for session management
     context_data = {'doc_id': doc_id}
@@ -338,10 +401,12 @@ Please handle this request using the most appropriate tool.
         "user_id": user_id,
     }
     
+    agent_start = time.time()
     try:
         print(f"DEBUG: Starting unified agent for doc {doc_id} with instruction: {user_instruction}")
         final_state = agent_workflow.process_request(initial_state)
         final_msg = final_state["messages"][-1].content
+        log_metric("unified_agent_done", user_id=user_id, session_id=session_id or "", doc_id=doc_id, agent_ms=int((time.time()-agent_start)*1000))
 
         # Handle the agent's response
         try:
@@ -369,6 +434,8 @@ Please handle this request using the most appropriate tool.
                 }
                 if 'coordinate_space' in parsed_data:
                     response_data['coordinate_space'] = parsed_data['coordinate_space']
+                total_ms = int((time.time()-req_start)*1000)
+                log_metric("unified_respond", user_id=user_id, session_id=session_id or "", doc_id=doc_id, type="annotation", total_ms=total_ms)
                 return JSONResponse(content=response_data)
             
             # Case 2: It's a RAG/informational JSON format
@@ -380,12 +447,12 @@ Please handle this request using the most appropriate tool.
                     "doc_id": doc_id,
                     "page": page_number,
                     "type": "information",
-                    "suggestions": parsed_data.get("suggestions", []),
-                    "citations": parsed_data.get("citations", []),
+                    "suggestions": [] if _is_smalltalk(user_instruction) else parsed_data.get("suggestions", []),
+                    "citations": [] if _is_smalltalk(user_instruction) else parsed_data.get("citations", []),
                     "most_referenced_page": parsed_data.get("most_referenced_page")
                 }
                 # Prefer prefetched citations, otherwise ensure; then filter to best page
-                if not response_content["citations"]:
+                if (not _is_smalltalk(user_instruction)) and (not response_content["citations"]):
                     if prefetched_citations:
                         filtered, bestp = _filter_citations_to_best_page(prefetched_citations, page_number, response_content.get("most_referenced_page"))
                         response_content["citations"] = filtered
@@ -398,8 +465,10 @@ Please handle this request using the most appropriate tool.
                         if not response_content.get("most_referenced_page"):
                             response_content["most_referenced_page"] = bestp
                 # Persist message with citations marker
-                persisted = _build_persisted_message(response_content["response"], response_content.get("citations") or [])
+                persisted = _build_persisted_message(response_content["response"], ([] if _is_smalltalk(user_instruction) else (response_content.get("citations") or [])))
                 session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
+                total_ms = int((time.time()-req_start)*1000)
+                log_metric("unified_respond", user_id=user_id, session_id=session_id or "", doc_id=doc_id, type="information", total_ms=total_ms)
                 return JSONResponse(content=response_content)
 
             # Case 3: It's some other JSON, treat as informational
@@ -426,35 +495,36 @@ Please handle this request using the most appropriate tool.
                 "doc_id": doc_id,
                 "page": page_number,
                 "type": "information",
-                "suggestions": suggestions,
-                "citations": [],
+                "suggestions": [] if _is_smalltalk(user_instruction) else suggestions,
+                "citations": [] if _is_smalltalk(user_instruction) else [],
                 "most_referenced_page": None
             }
             # Ensure citations are present; then filter to best page
-            if prefetched_citations:
+            if (not _is_smalltalk(user_instruction)) and prefetched_citations:
                 filtered, bestp = _filter_citations_to_best_page(prefetched_citations, page_number, response_content.get("most_referenced_page"))
                 response_content["citations"] = filtered
                 if not response_content.get("most_referenced_page"):
                     response_content["most_referenced_page"] = bestp
-            else:
+            elif not _is_smalltalk(user_instruction):
                 cits, mrp = _ensure_citations(doc_id, user_instruction, answer_text, page_number)
                 filtered, bestp = _filter_citations_to_best_page(cits, page_number, mrp)
                 response_content["citations"] = filtered
                 response_content["most_referenced_page"] = bestp
 
             # Persist message with citations marker
-            persisted = _build_persisted_message(response_content["response"], response_content.get("citations") or [])
+            persisted = _build_persisted_message(response_content["response"], ([] if _is_smalltalk(user_instruction) else (response_content.get("citations") or [])))
             session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
+            total_ms = int((time.time()-req_start)*1000)
+            log_metric("unified_respond", user_id=user_id, session_id=session_id or "", doc_id=doc_id, type="information", total_ms=total_ms)
             return JSONResponse(content=response_content)
             
     except Exception as e:
         error_msg = f"Error processing request: {str(e)}"
         print(f"DEBUG: Exception occurred in unified agent: {str(e)}")
         session_manager.add_message_to_session(session_id, user_id, "assistant", error_msg)
-        return JSONResponse(
-            content={"response": error_msg, "session_id": session_id, "doc_id": doc_id, "type": "error"},
-            status_code=500
-        )
+        total_ms = int((time.time()-req_start)*1000)
+        log_metric("unified_error", user_id=user_id, session_id=session_id or "", doc_id=doc_id, total_ms=total_ms)
+        return JSONResponse(content={"response": error_msg, "session_id": session_id, "doc_id": doc_id, "type": "error"}, status_code=500)
     finally:
         # Clean up temporary PDF file if it was created
         if doc_info.get("storage_type") == "database" and pdf_path and os.path.exists(pdf_path):
@@ -597,6 +667,39 @@ async def unified_agent_for_project(
     # Add message to history
     session_manager.add_message_to_session(session_id, user_id, "user", user_instruction)
     
+    # Handle small-talk/capabilities directly (avoid citations for chit-chat)
+    if _is_smalltalk(user_instruction):
+        reply = "Hello! I'm Ecadoc AI, an intelligent blueprint assistant. How can I help with your document?"
+        session_manager.add_message_to_session(session_id or "", user_id, "assistant", reply)
+        return JSONResponse(content={
+            "response": reply,
+            "session_id": session_id,
+            "project_id": project_id,
+            "doc_id": final_doc_id,
+            "type": "information",
+            "suggestions": [],
+            "citations": []
+        })
+    if _is_capabilities(user_instruction):
+        reply = (
+            "I can:\n\n"
+            "• Visually annotate floor plans (highlight, circle, count).\n"
+            "• Measure dimensions and areas, calibrated if needed.\n"
+            "• Describe page layout and where elements are located.\n"
+            "• Answer questions about notes, legends, and specs.\n"
+            "• Search for current info when asked (codes, prices)."
+        )
+        session_manager.add_message_to_session(session_id or "", user_id, "assistant", reply)
+        return JSONResponse(content={
+            "response": reply,
+            "session_id": session_id,
+            "project_id": project_id,
+            "doc_id": final_doc_id,
+            "type": "information",
+            "suggestions": [],
+            "citations": []
+        })
+
     # Prepare agent instruction
     simple_instruction = f"""
 Project Context:

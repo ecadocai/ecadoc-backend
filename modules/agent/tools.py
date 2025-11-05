@@ -14,6 +14,7 @@ from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from functools import lru_cache
+from cachetools import LRUCache
 from functools import lru_cache
 from inference_sdk import InferenceHTTPClient
 from langchain_tavily import TavilySearch
@@ -284,6 +285,11 @@ def should_use_internet_search(question: str) -> bool:
     # Default: don't search internet unless explicitly needed
     return False
 
+_retrieval_cache = LRUCache(maxsize=512)
+
+def _normalize_question(q: str) -> str:
+    return " ".join((q or "").lower().split())[:512]
+
 def process_question_with_hybrid_search(doc_id: str, question: str, include_suggestions: bool = False) -> Dict:
     """Fast path retrieval used primarily for generating citations.
 
@@ -292,6 +298,14 @@ def process_question_with_hybrid_search(doc_id: str, question: str, include_sugg
     quickly to build citations. This significantly reduces latency for fallback
     citation generation.
     """
+    # Cache key based on doc and normalized question; do not cache suggestions to keep entries small
+    cache_key = (doc_id, _normalize_question(question))
+    try:
+        if not include_suggestions and cache_key in _retrieval_cache:
+            return _retrieval_cache[cache_key]
+    except Exception:
+        pass
+
     doc_content = ""
     web_content = ""
     citations = []
@@ -567,15 +581,21 @@ Provide only relevant information (max 2 sentences). If no relevant info, respon
                     fallback_most_referenced = fallback_citations[0]["page"]
         except Exception as e:
             print(f"DEBUG: Could not get fallback citations: {e}")
-        
-        return {
-            "answer": fallback_answer,
-            "suggestions": [],
-            "citations": fallback_citations,
-            "most_referenced_page": fallback_most_referenced,
-            "has_document_content": bool(fallback_citations),
-            "has_web_content": False
-        }
+    
+    result = {
+        "answer": fallback_answer,
+        "suggestions": [],
+        "citations": fallback_citations,
+        "most_referenced_page": fallback_most_referenced,
+        "has_document_content": bool(fallback_citations),
+        "has_web_content": False
+    }
+    try:
+        if not include_suggestions:
+            _retrieval_cache[cache_key] = result
+    except Exception:
+        pass
+    return result
 
 @tool
 def load_pdf_for_floorplan(pdf_path: str) -> str:

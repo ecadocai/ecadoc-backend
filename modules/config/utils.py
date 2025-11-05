@@ -6,6 +6,7 @@ import json
 import time
 import threading
 from typing import Dict, Any
+import time as _time
 from modules.config.settings import settings
 
 def delete_file(path: str):
@@ -70,3 +71,21 @@ def generate_unique_filename(base_name: str, extension: str, directory: str) -> 
     import uuid
     unique_id = uuid.uuid4().hex[:8]
     return os.path.join(directory, f"{base_name}_{unique_id}.{extension}")
+
+def log_metric(event: str, **fields: Any) -> None:
+    """Lightweight, structured metric logger.
+
+    Prints a single-line record that is easy to grep in logs. Timestamps are
+    unix milliseconds for quick charting. Never raises.
+    """
+    try:
+        ts_ms = int(_time.time() * 1000)
+        parts = [f"event={event}", f"ts={ts_ms}"]
+        for k, v in fields.items():
+            # Avoid spaces/newlines
+            if isinstance(v, str):
+                v = v.replace("\n", " ").replace(" ", "_")
+            parts.append(f"{k}={v}")
+        print("METRIC " + " ".join(parts))
+    except Exception:
+        pass
