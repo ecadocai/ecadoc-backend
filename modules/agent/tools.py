@@ -956,6 +956,64 @@ Provide a helpful and accurate answer:"""
         return f"I encountered an error while processing your question. Please try rephrasing your question or check if the document is properly loaded."
 
 @tool
+def _jpeg_cache_path(doc_id: str, page_number: int, dpi: int = 144) -> str:
+    from modules.config.settings import settings
+    os.makedirs(settings.IMAGES_DIR, exist_ok=True)
+    return os.path.join(settings.IMAGES_DIR, f"{doc_id}_p{page_number}_d{dpi}.jpg")
+
+def _ensure_jpeg_cache(pdf_path: str, doc_id: str, page_number: int, dpi: int = 144) -> str:
+    """Ensure a grayscale JPEG exists for a page; return its path."""
+    cache_jpg = _jpeg_cache_path(doc_id, page_number, dpi)
+    if os.path.exists(cache_jpg):
+        return cache_jpg
+    # Try PyMuPDF fast path
+    try:
+        import fitz  # type: ignore
+        doc = fitz.open(pdf_path)
+        if page_number < 1 or page_number > doc.page_count:
+            raise Exception("page out of range")
+        zoom = dpi / 72.0
+        mat = fitz.Matrix(zoom, zoom)
+        pix = doc[page_number - 1].get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
+        pix.save(cache_jpg, jpg_quality=70)
+        doc.close()
+        return cache_jpg
+    except Exception as _e:
+        # Fallback to pdf2image
+        images = convert_from_path(pdf_path, dpi=dpi, first_page=page_number, last_page=page_number)
+        if not images:
+            raise Exception("page not found")
+        images[0] = images[0].convert('L')
+        images[0].save(cache_jpg, format="JPEG", quality=70)
+        return cache_jpg
+
+def warm_page_cache(pdf_path: str, doc_id: str, pages: list[int], dpi: int = 144) -> None:
+    """Best-effort warm cache for given pages (text + JPEG)."""
+    try:
+        import fitz  # type: ignore
+        doc = fitz.open(pdf_path)
+        for p in pages:
+            if p < 1 or p > doc.page_count:
+                continue
+            try:
+                # Text cache
+                cached = await_like(document_cache_manager.get_page_text, doc_id, p)
+                if not cached:
+                    txt = doc[p - 1].get_text("text") or ""
+                    run_awaitable(document_cache_manager.cache_page_text, doc_id, p, txt)
+                # JPEG cache
+                _ensure_jpeg_cache(pdf_path, doc_id, p, dpi)
+            except Exception:
+                continue
+        doc.close()
+    except Exception:
+        # Fallback: only try JPEG via pdf2image for first valid page
+        for p in pages:
+            try:
+                _ensure_jpeg_cache(pdf_path, doc_id, p, dpi)
+            except Exception:
+                continue
+
 def analyze_pdf_page_multimodal(doc_id: str, page_number: int = 1) -> str:
     """Optimized multimodal analysis of a PDF page using both text and visual analysis.
 
@@ -986,34 +1044,9 @@ def analyze_pdf_page_multimodal(doc_id: str, page_number: int = 1) -> str:
         if not pdf_path or not os.path.exists(pdf_path):
             return f"Error: PDF file not found for document {doc_id}"
             
-        # OPTIMIZATION: Cache a grayscale JPEG render at ~180 DPI
-        from modules.config.settings import settings
-        os.makedirs(settings.IMAGES_DIR, exist_ok=True)
-        cache_jpg = os.path.join(settings.IMAGES_DIR, f"{doc_id}_p{page_number}_d180.jpg")
+        # OPTIMIZATION: ensure JPEG cache at 144 DPI
+        cache_jpg = _ensure_jpeg_cache(pdf_path, doc_id, page_number, dpi=144)
         temp_image_path = cache_jpg
-        if not os.path.exists(cache_jpg):
-            # Try PyMuPDF first
-            try:
-                import fitz  # type: ignore
-                doc = fitz.open(pdf_path)
-                if page_number < 1 or page_number > doc.page_count:
-                    return f"Error: Page {page_number} not found in PDF."
-                page = doc[page_number - 1]
-                zoom = 180/72.0
-                mat = fitz.Matrix(zoom, zoom)
-                pix = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
-                pix.save(cache_jpg, jpg_quality=70)
-                doc.close()
-                print(f"DEBUG: Cached JPEG page render: {cache_jpg}")
-            except Exception as _e:
-                # Fallback to pdf2image
-                print(f"DEBUG: PyMuPDF render failed ({_e}); falling back to pdf2image")
-                images = convert_from_path(pdf_path, dpi=180, first_page=page_number, last_page=page_number)
-                if not images:
-                    return f"Error: Page {page_number} not found in PDF."
-                images[0] = images[0].convert('L')  # grayscale
-                images[0].save(cache_jpg, format="JPEG", quality=70)
-                print(f"DEBUG: Saved JPEG render: {cache_jpg}")
         
         # Extract text from the specified page using pypdf
         # Fast text extraction with cache (prefer PyMuPDF)

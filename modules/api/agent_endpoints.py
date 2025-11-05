@@ -14,7 +14,7 @@ from modules.config.utils import delete_file_after_delay, log_metric
 from modules.pdf_processing.service import pdf_processor
 from modules.database import db_manager
 from modules.agent import agent_workflow
-from modules.agent.tools import process_question_with_hybrid_search, summarize_page_text
+from modules.agent.tools import process_question_with_hybrid_search, summarize_page_text, warm_page_cache
 from modules.projects.service import project_service
 from modules.session import session_manager, context_resolver
 from modules.auth.deps import get_current_user_id
@@ -389,6 +389,13 @@ async def unified_agent(
         except Exception as e:
             print(f"DEBUG: quick page selection failed: {e}")
     log_metric("unified_preselect_done", user_id=user_id, session_id=session_id or "", doc_id=doc_id, page=page_number, preselect_ms=int((time.time()-preselect_start)*1000))
+
+    # Warm cache around likely pages (best-effort, background)
+    try:
+        neigh = [p for p in {page_number, max(1, page_number-1), page_number+1} if p > 0]
+        background_tasks.add_task(lambda: warm_page_cache(pdf_path, doc_id, neigh))
+    except Exception:
+        pass
     
     # Resolve context for session management
     context_data = {'doc_id': doc_id}
