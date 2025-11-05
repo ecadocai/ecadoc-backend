@@ -399,11 +399,11 @@ Please handle this request using the most appropriate tool.
             q.put(evt, block=False)
         except Exception:
             pass
+    set_progress_callback(progress_cb)
+
     final_state_holder = {"state": None, "error": None}
     def _run_agent():
         try:
-            # Attach progress callback in the worker thread context
-            set_progress_callback(progress_cb)
             st = agent_workflow.process_request(initial_state)
             final_state_holder["state"] = st
         except Exception as ex:
@@ -430,11 +430,8 @@ Please handle this request using the most appropriate tool.
         except Exception:
             break
 
-    # Clear callback for this request (best-effort)
-    try:
-        set_progress_callback(None)
-    except Exception:
-        pass
+    # Clear callback for this request
+    set_progress_callback(None)
 
     if final_state_holder["error"] is not None:
         e = final_state_holder["error"]
