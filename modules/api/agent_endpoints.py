@@ -235,16 +235,37 @@ def _build_persisted_message(answer_text: str, citations: list) -> str:
 router = APIRouter(prefix="/agent", tags=["agent"])
 
 def _is_smalltalk(text: str) -> bool:
-    """Detect greetings/identity/small-talk where citations are not useful."""
+    """Heuristic to detect greetings/identity/small-talk.
+
+    Uses word boundaries and short-message checks to avoid matching substrings
+    like 'hi' inside 'this'. Also excludes messages that clearly reference the
+    document (e.g., mention 'page', 'where', etc.).
+    """
     if not text:
         return False
     t = text.strip().lower()
-    small_phrases = (
-        "hi", "hello", "hey", "yo", "sup", "what's up", "whats up", "how are you",
-        "good morning", "good afternoon", "good evening", "who are you", "who r u",
-        "thanks", "thank you", "ok", "okay", "cool", "great", "awesome"
+
+    # If the message clearly references the document, never treat as small-talk
+    doc_keywords = (
+        "page", "document", "plan", "drawing", "sheet", "where", "summarize",
+        "annotate", "measure", "room", "door", "window", "legend", "note"
     )
-    return any(p in t for p in small_phrases)
+    if any(k in t for k in doc_keywords):
+        return False
+
+    # Short one-word/phrase greetings
+    if re.fullmatch(r"\s*(hi|hello|hey|yo|sup|ok|okay|cool|great|awesome)[!.?\s]*", t):
+        return True
+
+    # Common multi-word small-talk phrases
+    patterns = [
+        r"\bwhat'?s up\b",
+        r"\bhow are you\b",
+        r"\bgood (morning|afternoon|evening)\b",
+        r"\bwho are you\b",
+        r"\bthank(s| you)\b",
+    ]
+    return any(re.search(p, t) for p in patterns)
 
 def _is_capabilities(text: str) -> bool:
     if not text:
