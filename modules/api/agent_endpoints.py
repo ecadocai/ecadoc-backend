@@ -2,6 +2,9 @@
 Unified agent API endpoints for the Floor Plan Agent API
 """
 import os
+import asyncio
+import threading
+import queue
 import uuid
 import re
 import json
@@ -18,6 +21,7 @@ from modules.agent.tools import process_question_with_hybrid_search
 from modules.projects.service import project_service
 from modules.session import session_manager, context_resolver
 from modules.auth.deps import get_current_user_id
+from modules.agent.progress import set_progress_callback
 
 def extract_manual_suggestions(text: str) -> list:
     """Extract manually formatted suggestions from the response text."""
@@ -242,6 +246,45 @@ def _sse_event(event: str, data: dict) -> str:
         payload = json.dumps({"message": str(data)})
     return f"event: {event}\ndata: {payload}\n\n"
 
+def _format_status_message(code: str, data: dict) -> str:
+    """Map progress codes to concise, human-friendly messages."""
+    page = data.get("page")
+    count = data.get("count")
+    if code == "pdf_load_start":
+        return "Loading PDF…"
+    if code == "pdf_load_complete":
+        return "PDF ready"
+    if code == "page_image_start":
+        return f"Rasterizing page {page}…" if page else "Rasterizing page…"
+    if code == "page_image_ready":
+        return f"Page {page} image ready" if page else "Page image ready"
+    if code == "object_detection_start":
+        return "Detecting objects…"
+    if code == "object_detection_complete":
+        return f"Detected {count} objects" if count is not None else "Detection complete"
+    if code == "annotations_generate_start":
+        return "Generating annotations…"
+    if code == "annotations_generate_complete":
+        return f"Applied {count} annotation(s)" if count is not None else "Annotations ready"
+    if code == "vision_analysis_start":
+        return f"Analyzing page {page} visually…" if page else "Analyzing page visually…"
+    if code == "vision_analysis_complete":
+        return "Visual analysis complete"
+    if code == "rag_start":
+        return "Retrieving relevant text…"
+    if code == "rag_complete":
+        return "Formulating answer…"
+    if code == "rag_suggestions_start":
+        return "Finding related topics…"
+    if code == "rag_suggestions_complete":
+        return "Suggestions ready"
+    # Errors and warnings
+    if code.endswith("_error"):
+        return (data.get("message") or code.replace("_", " ").title())
+    if code.endswith("_warning"):
+        return (data.get("message") or code.replace("_", " ").title())
+    return code.replace("_", " ").title()
+
 async def _unified_stream_impl(
     *,
     background_tasks: BackgroundTasks,
@@ -348,14 +391,57 @@ Please handle this request using the most appropriate tool.
         "user_id": user_id,
     }
 
-    try:
-        final_state = agent_workflow.process_request(initial_state)
-        final_msg = final_state["messages"][-1].content
-        yield _sse_event("status", {"stage": "agent_complete", "message": "Agent completed"})
-    except Exception as e:
+    # Install progress callback and run agent in a worker thread so tool-level
+    # events can be forwarded in real time via SSE.
+    q: "queue.Queue[dict]" = queue.Queue()
+    def progress_cb(evt: dict):
+        try:
+            q.put(evt, block=False)
+        except Exception:
+            pass
+    set_progress_callback(progress_cb)
+
+    final_state_holder = {"state": None, "error": None}
+    def _run_agent():
+        try:
+            st = agent_workflow.process_request(initial_state)
+            final_state_holder["state"] = st
+        except Exception as ex:
+            final_state_holder["error"] = ex
+
+    t = threading.Thread(target=_run_agent, daemon=True)
+    t.start()
+
+    # Drain status queue while agent runs
+    while t.is_alive():
+        try:
+            evt = q.get(timeout=0.25)
+            msg = _format_status_message(evt.get("code", "status"), evt)
+            yield _sse_event("status", {"stage": evt.get("code", "status"), "message": msg, **evt})
+        except queue.Empty:
+            await asyncio.sleep(0.1)
+
+    # Flush remaining events, if any
+    while not q.empty():
+        try:
+            evt = q.get_nowait()
+            msg = _format_status_message(evt.get("code", "status"), evt)
+            yield _sse_event("status", {"stage": evt.get("code", "status"), "message": msg, **evt})
+        except Exception:
+            break
+
+    # Clear callback for this request
+    set_progress_callback(None)
+
+    if final_state_holder["error"] is not None:
+        e = final_state_holder["error"]
         yield _sse_event("error", {"message": f"Agent error: {str(e)}"})
         yield _sse_event("done", {"ok": False})
         return
+
+    final_state = final_state_holder["state"]
+    final_msg = final_state["messages"][-1].content
+    yield _sse_event("status", {"stage": "agent_complete", "message": "Agent completed"})
 
     # 5) Postprocess into unified response
     yield _sse_event("status", {"stage": "postprocess", "message": "Parsing response"})
