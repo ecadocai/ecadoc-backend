@@ -230,6 +230,52 @@ class DocumentCacheManager:
         
         if content is not None:
             await self.cache_document_content(doc_id, content)
+
+    # ---------- Page Text Caching (lightweight helpers) ----------
+    async def get_page_text(self, doc_id: str, page: int) -> Optional[str]:
+        """Get cached page text for a document page if present."""
+        with self._lock:
+            self._stats.total_requests += 1
+            key = f"text:{doc_id}:{page}"
+            if key in self._metadata_cache:
+                entry = self._metadata_cache[key]
+                entry.update_access()
+                self._metadata_cache.move_to_end(key)
+                self._stats.cache_hits += 1
+                self._stats.calculate_rates()
+                return entry.data  # type: ignore[return-value]
+            self._stats.cache_misses += 1
+            self._stats.calculate_rates()
+            return None
+
+    async def cache_page_text(self, doc_id: str, page: int, text: str) -> None:
+        """Cache text for a specific page of a document."""
+        with self._lock:
+            key = f"text:{doc_id}:{page}"
+            size_bytes = len(text.encode("utf-8"))
+            # Ensure capacity
+            # Use metadata cache lane for small text entries
+            # (best-effort; if eviction needed it will happen here)
+            # Reuse _ensure_capacity indirectly via similar logic
+            # Simplified: if metadata cache full, evict 1 LRU
+            if len(self._metadata_cache) >= self._max_size:
+                # Evict one LRU metadata entry
+                try:
+                    _, entry = self._metadata_cache.popitem(last=False)
+                    self._current_memory_usage -= entry.size_bytes
+                    self._stats.eviction_count += 1
+                except Exception:
+                    pass
+            entry = CacheEntry(
+                data=text,
+                access_time=datetime.now(),
+                access_count=1,
+                size_bytes=size_bytes,
+            )
+            self._metadata_cache[key] = entry
+            self._current_memory_usage += size_bytes
+            self._stats.metadata_cache_size = len(self._metadata_cache)
+            self._stats.total_memory_usage = self._current_memory_usage
     
     async def _ensure_capacity(self, required_bytes: int, is_metadata: bool):
         """

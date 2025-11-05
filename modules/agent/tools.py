@@ -22,6 +22,7 @@ from datetime import datetime
 
 from modules.config.settings import settings
 from modules.pdf_processing.service import pdf_processor
+from modules.cache.document_cache import document_cache_manager
 
 # Initialize Roboflow client
 CLIENT = InferenceHTTPClient(
@@ -956,7 +957,11 @@ Provide a helpful and accurate answer:"""
 
 @tool
 def analyze_pdf_page_multimodal(doc_id: str, page_number: int = 1) -> str:
-    """Optimized multimodal analysis of a PDF page using both text and visual analysis."""
+    """Optimized multimodal analysis of a PDF page using both text and visual analysis.
+
+    Caches a rasterized JPEG for the page to avoid re-rendering. Uses PyMuPDF
+    when available for faster rendering; falls back to pdf2image.
+    """
     try:
         # Get document info to find PDF path
         doc_info = pdf_processor.get_document_info(doc_id)
@@ -981,31 +986,58 @@ def analyze_pdf_page_multimodal(doc_id: str, page_number: int = 1) -> str:
         if not pdf_path or not os.path.exists(pdf_path):
             return f"Error: PDF file not found for document {doc_id}"
             
-        # OPTIMIZATION: Use lower DPI for faster processing (200 instead of 300)
-        print(f"DEBUG: Converting page {page_number} to image for multimodal analysis (optimized)")
-        images = convert_from_path(pdf_path, dpi=200, first_page=page_number, last_page=page_number)
-        
-        if not images:
-            return f"Error: Page {page_number} not found in PDF."
-            
-        temp_image_path = f"temp_multimodal_page_{page_number}_{uuid.uuid4().hex[:8]}.png"
-        images[0].save(temp_image_path, "PNG")
-        print(f"DEBUG: Saved temporary image: {temp_image_path}")
+        # OPTIMIZATION: Cache a grayscale JPEG render at ~180 DPI
+        import os
+        from modules.config.settings import settings
+        os.makedirs(settings.IMAGES_DIR, exist_ok=True)
+        cache_jpg = os.path.join(settings.IMAGES_DIR, f"{doc_id}_p{page_number}_d180.jpg")
+        temp_image_path = cache_jpg
+        if not os.path.exists(cache_jpg):
+            # Try PyMuPDF first
+            try:
+                import fitz  # type: ignore
+                doc = fitz.open(pdf_path)
+                if page_number < 1 or page_number > doc.page_count:
+                    return f"Error: Page {page_number} not found in PDF."
+                page = doc[page_number - 1]
+                zoom = 180/72.0
+                mat = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
+                pix.save(cache_jpg, jpg_quality=70)
+                doc.close()
+                print(f"DEBUG: Cached JPEG page render: {cache_jpg}")
+            except Exception as _e:
+                # Fallback to pdf2image
+                print(f"DEBUG: PyMuPDF render failed ({_e}); falling back to pdf2image")
+                images = convert_from_path(pdf_path, dpi=180, first_page=page_number, last_page=page_number)
+                if not images:
+                    return f"Error: Page {page_number} not found in PDF."
+                images[0] = images[0].convert('L')  # grayscale
+                images[0].save(cache_jpg, format="JPEG", quality=70)
+                print(f"DEBUG: Saved JPEG render: {cache_jpg}")
         
         # Extract text from the specified page using pypdf
-        reader = PdfReader(pdf_path)
-        if page_number > len(reader.pages):
-            return f"Error: Page {page_number} does not exist in the document (total pages: {len(reader.pages)})"
-            
-        # Get the page object
-        page = reader.pages[page_number - 1]
-        
-        # Extract text and check if it's empty or just indicates no text was extracted
-        raw_text = page.extract_text()
-        if not raw_text or '[No text extracted:' in raw_text:
-            page_text = "This page appears to contain primarily visual elements such as diagrams, drawings, or images. No machine-readable text could be extracted from this page." 
-        else:
-            page_text = raw_text
+        # Fast text extraction with cache (prefer PyMuPDF)
+        page_text = None
+        try:
+            import fitz  # type: ignore
+            cached = await_like(document_cache_manager.get_page_text, doc_id, page_number)
+            if cached:
+                page_text = cached
+            else:
+                doc = fitz.open(pdf_path)
+                if page_number > doc.page_count:
+                    return f"Error: Page {page_number} does not exist in the document (total pages: {doc.page_count})"
+                txt = doc[page_number - 1].get_text("text") or ""
+                doc.close()
+                page_text = txt
+                run_awaitable(document_cache_manager.cache_page_text, doc_id, page_number, txt)
+        except Exception:
+            reader = PdfReader(pdf_path)
+            if page_number > len(reader.pages):
+                return f"Error: Page {page_number} does not exist in the document (total pages: {len(reader.pages)})"
+            raw_text = reader.pages[page_number - 1].extract_text()
+            page_text = raw_text or ""
         
         # Use multimodal LLM to analyze both image and text
         llm = _get_llm_cached(settings.OPENAI_MODEL, 0.0)
@@ -1018,7 +1050,7 @@ def analyze_pdf_page_multimodal(doc_id: str, page_number: int = 1) -> str:
             },
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{encode_image(temp_image_path)}"}
+                "image_url": {"url": f"data:image/jpeg;base64,{encode_image(temp_image_path)}"}
             }
         ]
         
@@ -1052,6 +1084,77 @@ def encode_image(image_path):
     import base64
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
+
+@tool
+def summarize_page_text(doc_id: str, page_number: int = 1, max_sentences: int = 4) -> str:
+    """Summarize the text content of a specific page succinctly.
+
+    Uses cached page text when available. Falls back to multimodal analysis if
+    no machine-readable text is found.
+    """
+    try:
+        # Resolve PDF path similar to analyze path
+        doc_info = pdf_processor.get_document_info(doc_id)
+        pdf_path = None
+        temp_path = None
+        if doc_info.get("storage_type") == "database":
+            try:
+                pdf_bytes = pdf_processor.get_document_content(doc_id)
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as f:
+                    f.write(pdf_bytes)
+                    temp_path = f.name
+                    pdf_path = temp_path
+            except Exception as e:
+                return f"Error retrieving document: {e}"
+        else:
+            pdf_path = doc_info.get("pdf_path")
+        if not pdf_path or not os.path.exists(pdf_path):
+            return f"Error: PDF path not found for document {doc_id}"
+
+        # Try cached text first
+        text = None
+        try:
+            cached = await_like(document_cache_manager.get_page_text, doc_id, page_number)
+            if cached:
+                text = cached
+            else:
+                try:
+                    import fitz  # type: ignore
+                    d = fitz.open(pdf_path)
+                    if page_number > d.page_count:
+                        return f"Error: Page {page_number} does not exist (total {d.page_count})"
+                    text = d[page_number - 1].get_text("text") or ""
+                    d.close()
+                except Exception:
+                    r = PdfReader(pdf_path)
+                    if page_number > len(r.pages):
+                        return f"Error: Page {page_number} does not exist (total {len(r.pages)})"
+                    text = r.pages[page_number - 1].extract_text() or ""
+                run_awaitable(document_cache_manager.cache_page_text, doc_id, page_number, text)
+        except Exception:
+            pass
+
+        if not text or not text.strip():
+            # Fall back to multimodal analysis
+            return analyze_pdf_page_multimodal.invoke({"doc_id": doc_id, "page_number": page_number}) if hasattr(analyze_pdf_page_multimodal, 'invoke') else analyze_pdf_page_multimodal(doc_id, page_number)
+
+        text = text.strip()
+        llm = _get_llm_cached(settings.OPENAI_MODEL, 0.0)
+        prompt = (
+            f"Summarize this page in {max_sentences} sentences for a non-architect audience."
+            f"\n\nPAGE TEXT (may be partial):\n{text[:4000]}"
+        )
+        resp = llm.invoke(prompt)
+        return resp.content
+    except Exception as e:
+        return f"Error summarizing page: {e}"
+    finally:
+        try:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
 
 @tool
 def answer_question_with_suggestions(doc_id: str, question: str) -> str:

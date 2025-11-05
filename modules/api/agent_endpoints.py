@@ -14,7 +14,7 @@ from modules.config.utils import delete_file_after_delay, log_metric
 from modules.pdf_processing.service import pdf_processor
 from modules.database import db_manager
 from modules.agent import agent_workflow
-from modules.agent.tools import process_question_with_hybrid_search
+from modules.agent.tools import process_question_with_hybrid_search, summarize_page_text
 from modules.projects.service import project_service
 from modules.session import session_manager, context_resolver
 from modules.auth.deps import get_current_user_id
@@ -384,6 +384,30 @@ async def unified_agent(
     # Add user message to chat history with context
     session_manager.add_message_to_session(session_id, user_id, "user", user_instruction)
     
+    # Fast path: explicit page summarization (keep citations to that page)
+    if re.search(r"\b(summarize|summary|summarise)\b", user_instruction.lower()) and page_match:
+        summary = summarize_page_text(doc_id, page_number)
+        citations = [{
+            "id": 1,
+            "page": page_number,
+            "text": f"Page {page_number}",
+            "relevance_score": None,
+            "doc_id": doc_id,
+        }]
+        persisted = _build_persisted_message(summary, citations)
+        session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
+        total_ms = int((time.time()-req_start)*1000)
+        log_metric("unified_respond", user_id=user_id, session_id=session_id or "", doc_id=doc_id, type="page_summary", total_ms=total_ms)
+        return JSONResponse(content={
+            "response": summary,
+            "session_id": session_id,
+            "doc_id": doc_id,
+            "page": page_number,
+            "type": "information",
+            "citations": citations,
+            "suggestions": [],
+        })
+    
     # Simple instruction for the agent - let the workflow handle tool selection
     simple_instruction = f"""
 Document ID: {doc_id}
@@ -714,6 +738,30 @@ User Request: {user_instruction}
 Please handle this request using the most appropriate tool.
 """
     
+    # Fast path: explicit page summarization with citation
+    if re.search(r"\b(summarize|summary|summarise)\b", user_instruction.lower()) and page_match:
+        summary = summarize_page_text(final_doc_id, page_number)
+        citations = [{
+            "id": 1,
+            "page": page_number,
+            "text": f"Page {page_number}",
+            "relevance_score": None,
+            "doc_id": final_doc_id,
+        }]
+        persisted = _build_persisted_message(summary, citations)
+        session_manager.add_message_to_session(session_id, user_id, "assistant", persisted)
+        return JSONResponse(content={
+            "response": summary,
+            "session_id": session_id,
+            "project_id": project_id,
+            "doc_id": final_doc_id,
+            "page": page_number,
+            "type": "information",
+            "citations": citations,
+            "suggestions": [],
+            "project_context": {"name": project["name"], "description": project["description"]}
+        })
+
     initial_state = {
         "messages": [HumanMessage(content=simple_instruction)],
         "pdf_path": pdf_path,
