@@ -396,8 +396,11 @@ async def unified_agent(
     if re.search(r"\b(summarize|summary|summarise)\b", user_instruction.lower()) and page_match:
         try:
             summary = summarize_page_text.invoke({"doc_id": doc_id, "page_number": page_number})
-        except Exception:
-            summary = summarize_page_text(doc_id, page_number) if callable(summarize_page_text) else ""
+        except Exception as e:
+            try:
+                summary = summarize_page_text.run({"doc_id": doc_id, "page_number": page_number})
+            except Exception:
+                summary = f"Error summarizing page: {e}"
         citations = [{
             "id": 1,
             "page": page_number,
@@ -753,8 +756,11 @@ Please handle this request using the most appropriate tool.
     if re.search(r"\b(summarize|summary|summarise)\b", user_instruction.lower()) and page_match:
         try:
             summary = summarize_page_text.invoke({"doc_id": final_doc_id, "page_number": page_number})
-        except Exception:
-            summary = summarize_page_text(final_doc_id, page_number) if callable(summarize_page_text) else ""
+        except Exception as e:
+            try:
+                summary = summarize_page_text.run({"doc_id": final_doc_id, "page_number": page_number})
+            except Exception:
+                summary = f"Error summarizing page: {e}"
         citations = [{
             "id": 1,
             "page": page_number,
