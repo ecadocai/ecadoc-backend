@@ -2,6 +2,7 @@
 Agent tools for floor plan processing and annotation
 """
 import os
+import re
 import json
 import uuid
 import tempfile
@@ -958,7 +959,9 @@ Provide a helpful and accurate answer:"""
 def _jpeg_cache_path(doc_id: str, page_number: int, dpi: int = 144) -> str:
     from modules.config.settings import settings
     os.makedirs(settings.IMAGES_DIR, exist_ok=True)
-    return os.path.join(settings.IMAGES_DIR, f"{doc_id}_p{page_number}_d{dpi}.jpg")
+    # Sanitize doc_id for filesystem safety
+    safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(doc_id))
+    return os.path.join(settings.IMAGES_DIR, f"{safe_id}_p{page_number}_d{dpi}.jpg")
 
 def _ensure_jpeg_cache(pdf_path: str, doc_id: str, page_number: int, dpi: int = 144) -> str:
     """Ensure a grayscale JPEG exists for a page; return its path."""

@@ -393,7 +393,8 @@ async def unified_agent(
     # Warm cache around likely pages (best-effort, background)
     try:
         neigh = [p for p in {page_number, max(1, page_number-1), page_number+1} if p > 0]
-        background_tasks.add_task(lambda: warm_page_cache(pdf_path, doc_id, neigh))
+        # Schedule cache warming as a proper background task (no lambda)
+        background_tasks.add_task(warm_page_cache, pdf_path, doc_id, neigh)
     except Exception:
         pass
     
