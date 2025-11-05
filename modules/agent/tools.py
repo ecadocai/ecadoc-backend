@@ -21,7 +21,6 @@ from datetime import datetime
 
 from modules.config.settings import settings
 from modules.pdf_processing.service import pdf_processor
-from modules.agent.progress import emit as emit_progress
 
 # Initialize Roboflow client
 CLIENT = InferenceHTTPClient(
@@ -582,7 +581,6 @@ Provide only relevant information (max 2 sentences). If no relevant info, respon
 def load_pdf_for_floorplan(pdf_path: str) -> str:
     """Load and validate a PDF file for floor plan processing."""
     try:
-        emit_progress("pdf_load_start", path=pdf_path)
         if not os.path.exists(pdf_path):
             return f"Error: PDF file not found at '{pdf_path}'."
 
@@ -591,10 +589,8 @@ def load_pdf_for_floorplan(pdf_path: str) -> str:
         if not images:
             return f"Error: Could not read PDF pages from '{pdf_path}'."
 
-        emit_progress("pdf_load_complete", path=pdf_path)
         return f"PDF '{pdf_path}' loaded successfully and is ready for floor plan processing."
     except Exception as e:
-        emit_progress("pdf_load_error", message=str(e))
         return f"Error loading PDF: {str(e)}"
 
 @tool
@@ -605,7 +601,6 @@ def convert_pdf_page_to_image(pdf_path: str, page: int = 1, dpi: int = 200) -> s
             return f"Error: PDF file not found at '{pdf_path}'."
 
         print(f"DEBUG: Converting PDF page {page} to image with DPI {dpi}")
-        emit_progress("page_image_start", page=page, dpi=dpi)
         images = convert_from_path(pdf_path, dpi=dpi, first_page=page, last_page=page)
 
         if not images:
@@ -618,7 +613,6 @@ def convert_pdf_page_to_image(pdf_path: str, page: int = 1, dpi: int = 200) -> s
         width, height = image.size
 
         print(f"DEBUG: Temporary image saved to {temp_image_path}")
-        emit_progress("page_image_ready", page=page, dpi=dpi, image_path=temp_image_path, width=width, height=height)
         return json.dumps({
             "success": True,
             "image_path": temp_image_path,
@@ -628,7 +622,6 @@ def convert_pdf_page_to_image(pdf_path: str, page: int = 1, dpi: int = 200) -> s
             "dpi": dpi
         })
     except Exception as e:
-        emit_progress("page_image_error", page=page, message=str(e))
         return json.dumps({"success": False, "error": f"Error converting PDF to image: {str(e)}"})
 
 @tool
@@ -639,7 +632,6 @@ def detect_floor_plan_objects(image_path: str = "temp_floor_plan.png", conf_thre
             return f"Error: Image file not found at '{image_path}'."
 
         print(f"DEBUG: Running Roboflow inference on {image_path}")
-        emit_progress("object_detection_start", image_path=image_path, threshold=conf_threshold)
 
         # Run inference
         result = CLIENT.infer(image_path, model_id=settings.ROBOFLOW_MODEL_ID)
@@ -661,10 +653,8 @@ def detect_floor_plan_objects(image_path: str = "temp_floor_plan.png", conf_thre
             detected_objects.append(obj)
 
         print(f"DEBUG: Detected {len(detected_objects)} objects")
-        emit_progress("object_detection_complete", count=len(detected_objects))
         return json.dumps(detected_objects, indent=2)
     except Exception as e:
-        emit_progress("object_detection_error", message=str(e))
         return f"Error during detection: {str(e)}"
 
 @tool
@@ -691,7 +681,6 @@ def generate_frontend_annotations(
         A JSON string containing the list of annotation objects and the list of all detected objects.
     """
     try:
-        emit_progress("annotations_generate_start", page=page_number, annotation_type=annotation_type)
         all_objects = json.loads(objects_json)
         if not isinstance(all_objects, list):
             return json.dumps({"error": "Objects data must be a list of detected objects."})
@@ -708,7 +697,6 @@ def generate_frontend_annotations(
             ]
             if not objects_to_annotate:
                 available = sorted(list(set(obj.get('class_name', 'N/A') for obj in all_objects)))
-                emit_progress("annotations_generate_warning", message="no_objects_match_filter", available_classes=available)
                 return json.dumps({
                     "error": f"No objects found matching filter '{filter_condition}'.",
                     "available_classes": available
@@ -830,12 +818,11 @@ def generate_frontend_annotations(
                 "rotation": 0
             }
         }
-        emit_progress("annotations_generate_complete", count=len(annotations), page=page_number)
+        
         return json.dumps(response_data, indent=2)
     except json.JSONDecodeError:
         return json.dumps({"error": "Invalid JSON format for detected objects."})
     except Exception as e:
-        emit_progress("annotations_generate_error", message=str(e))
         return json.dumps({"error": f"Error generating annotations: {str(e)}"})
     finally:
         # Clean up the temporary image file
@@ -915,7 +902,6 @@ def answer_question_using_rag(doc_id: str, question: str) -> str:
     """Answer questions using document content only - simple and fast."""
     try:
         print(f"DEBUG: Processing question with document-only approach: {question}")
-        emit_progress("rag_start", doc_id=doc_id)
         docs = None
         if getattr(pdf_processor, 'use_database_storage', False):
             docs = pdf_processor.query_document_vectors(doc_id, question, k=4)
@@ -942,19 +928,16 @@ User question: {question}
 Provide a helpful and accurate answer:"""
 
         rag_response = llm.invoke(prompt)
-        emit_progress("rag_complete", citations=len(docs) if docs else 0)
         return rag_response.content
 
     except Exception as e:
         print(f"DEBUG: Error in document RAG: {e}")
-        emit_progress("rag_error", message=str(e))
         return f"I encountered an error while processing your question. Please try rephrasing your question or check if the document is properly loaded."
 
 @tool
 def analyze_pdf_page_multimodal(doc_id: str, page_number: int = 1) -> str:
     """Optimized multimodal analysis of a PDF page using both text and visual analysis."""
     try:
-        emit_progress("vision_analysis_start", page=page_number)
         # Get document info to find PDF path
         doc_info = pdf_processor.get_document_info(doc_id)
         
@@ -1039,11 +1022,9 @@ def analyze_pdf_page_multimodal(doc_id: str, page_number: int = 1) -> str:
             except Exception as pdf_cleanup_error:
                 print(f"DEBUG: Error cleaning up temporary PDF file: {pdf_cleanup_error}")
         
-        emit_progress("vision_analysis_complete", page=page_number)
         return response.content
         
     except Exception as e:
-        emit_progress("vision_analysis_error", message=str(e))
         return f"Error analyzing PDF page: {str(e)}"
 
 def encode_image(image_path):
@@ -1057,7 +1038,6 @@ def answer_question_with_suggestions(doc_id: str, question: str) -> str:
     """Answer questions about the document using simple RAG with suggestions - no hybrid approach."""
     try:
         print(f"DEBUG: Processing question with document-only approach: {question}")
-        emit_progress("rag_suggestions_start", doc_id=doc_id)
         
         # Use simple document search only
         docs = None
@@ -1122,7 +1102,6 @@ Provide a helpful and accurate answer. Include suggestions and cite relevant pag
                 "has_web_content": False
             }
         }
-        emit_progress("rag_suggestions_complete", citations=len(citations), suggestions=len(suggestions))
         return json.dumps(response_data)
         for page_num in relevant_pages[:3]:  # Max 3 suggestions
             suggestions.append({
@@ -1142,7 +1121,6 @@ Provide a helpful and accurate answer. Include suggestions and cite relevant pag
         
     except Exception as e:
         print(f"DEBUG: Error in document RAG with suggestions: {e}")
-        emit_progress("rag_suggestions_error", message=str(e))
         # Try to provide basic citations even in error case
         error_citations = []
         try:
