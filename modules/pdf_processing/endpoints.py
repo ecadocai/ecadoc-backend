@@ -2,6 +2,7 @@
 PDF processing API endpoints for the Floor Plan Agent API
 """
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi import status
 from typing import List
 from modules.pdf_processing.service import pdf_processor
 from modules.auth.deps import get_current_user_id
@@ -12,7 +13,7 @@ import tempfile
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
-@router.post("/upload")
+@router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
 async def upload_pdf(
     files: List[UploadFile] = File(...),
     current_user_id: int = Depends(get_current_user_id),
@@ -73,7 +74,7 @@ async def upload_pdf(
         logger.error("upload_error", extra={"error": str(e)})
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-@router.post("/upload-multiple")
+@router.post("/upload-multiple", status_code=status.HTTP_202_ACCEPTED)
 async def upload_multiple_pdfs(
     files: List[UploadFile] = File(...),
     current_user_id: int = Depends(get_current_user_id),
