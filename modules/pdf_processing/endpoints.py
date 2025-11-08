@@ -1,8 +1,7 @@
 """
 PDF processing API endpoints for the Floor Plan Agent API
 """
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi import Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from typing import List
 from modules.pdf_processing.service import pdf_processor
 from modules.auth.deps import get_current_user_id
@@ -10,7 +9,10 @@ from modules.auth.deps import get_current_user_id
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 @router.post("/upload")
-async def upload_pdf(files: List[UploadFile] = File(...), user_id: int = Form(...)):
+async def upload_pdf(
+    files: List[UploadFile] = File(...),
+    current_user_id: int = Depends(get_current_user_id),
+):
     """
     Upload and index PDF document(s) - supports both single and multiple files, requires JWT
     """
@@ -38,7 +40,10 @@ async def upload_pdf(files: List[UploadFile] = File(...), user_id: int = Form(..
         if len(valid_files) == 1:
             file = valid_files[0]
             file_content = await file.read()
-            result = pdf_processor.upload_and_index_pdf(file_content, file.filename, Depends(get_current_user_id))
+            # Use authenticated user id, never trust client-provided user id
+            result = pdf_processor.upload_and_index_pdf(
+                file_content, file.filename, current_user_id
+            )
             print(f"Debug: single file upload result: {result}")
             return result
         
@@ -53,7 +58,9 @@ async def upload_pdf(files: List[UploadFile] = File(...), user_id: int = Form(..
                 filenames.append(file.filename)
                 print(f"Debug: processed file {file.filename}, size: {len(content)} bytes")
             
-            result = pdf_processor.upload_and_index_multiple_pdfs(file_contents, filenames, user_id)
+            result = pdf_processor.upload_and_index_multiple_pdfs(
+                file_contents, filenames, current_user_id
+            )
             print(f"Debug: multiple files upload result: {result}")
             return result
         
@@ -64,7 +71,10 @@ async def upload_pdf(files: List[UploadFile] = File(...), user_id: int = Form(..
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @router.post("/upload-multiple")
-async def upload_multiple_pdfs(files: List[UploadFile] = File(...), user_id: int = Form(...)):
+async def upload_multiple_pdfs(
+    files: List[UploadFile] = File(...),
+    current_user_id: int = Depends(get_current_user_id),
+):
     """
     Upload and index multiple PDF documents, requires JWT
     """
@@ -99,7 +109,9 @@ async def upload_multiple_pdfs(files: List[UploadFile] = File(...), user_id: int
             print(f"Debug: processed file {file.filename}, size: {len(content)} bytes")
         
         # Process files
-        result = pdf_processor.upload_and_index_multiple_pdfs(file_contents, filenames, Depends(get_current_user_id))
+        result = pdf_processor.upload_and_index_multiple_pdfs(
+            file_contents, filenames, current_user_id
+        )
         print(f"Debug: upload result: {result}")
         
         return result
@@ -111,11 +123,12 @@ async def upload_multiple_pdfs(files: List[UploadFile] = File(...), user_id: int
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @router.get("/")
-def list_documents(user_id: int = None):
+def list_documents(user_id: int | None = None, current_user_id: int = Depends(get_current_user_id)):
     """
     List all uploaded documents, optionally filtered by user
     """
-    return pdf_processor.list_documents(user_id if user_id is not None else Depends(get_current_user_id))
+    resolved_user_id = user_id if user_id is not None else current_user_id
+    return pdf_processor.list_documents(resolved_user_id)
 
 @router.get("/{doc_id}")
 def get_document_info(doc_id: str):

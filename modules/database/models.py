@@ -268,32 +268,29 @@ class Notification:
     created_at: Optional[datetime] = None
     
     def validate(self) -> bool:
-        """Validate document data"""
-        if not self.doc_id or not self.filename:
-            return False
-        if not self.file_id:  # file_id is required for database storage
-            return False
-        if self.pages < 0 or self.chunks_indexed < 0:
-            return False
-        if self.status not in ['active', 'file_missing', 'error', 'processing']:
-            return False
+        """Validate notification data"""
         if self.user_id <= 0:
+            return False
+        if not isinstance(self.title, str) or not self.title.strip():
+            return False
+        if not isinstance(self.message, str) or not self.message.strip():
+            return False
+        # Accept any string type for extensibility
+        if not isinstance(self.notification_type, str) or not self.notification_type.strip():
             return False
         return True
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
+        """Convert notification to dictionary"""
         return {
             'id': self.id,
-            'doc_id': self.doc_id,
-            'filename': self.filename,
-            'file_id': self.file_id,
-            'pages': self.pages,
-            'chunks_indexed': self.chunks_indexed,
-            'status': self.status,
             'user_id': self.user_id,
+            'title': self.title,
+            'message': self.message,
+            'notification_type': self.notification_type,
+            'metadata': self.metadata,
+            'is_read': self.is_read,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 
 @dataclass
