@@ -1977,22 +1977,27 @@ class DatabaseManager:
         try:
             conn = self.get_connection()
             cur = conn.cursor()
-            
-            # Try to create the extension
+
+            # Try to create pgvector
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            # Also try to create pg_trgm for hybrid text search
+            try:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+            except Exception:
+                pass
             conn.commit()
-            
+
             # Verify the extension is available
             cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
             result = cur.fetchone()
-            
+
             if result:
                 print("pgvector extension is available")
                 return True
             else:
                 print("WARNING: pgvector extension could not be created")
                 return False
-                
+
         except Exception as e:
             print(f"Error setting up pgvector extension: {e}")
             print("Please install pgvector extension manually:")
@@ -2001,7 +2006,7 @@ class DatabaseManager:
             return False
         finally:
             if conn:
-                conn.close()
+                self.release_connection(conn)
     
     def create_new_tables(self):
         """Create new tables for file storage and vector operations"""
@@ -2052,9 +2057,23 @@ class DatabaseManager:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_vector_chunks_doc_id ON vector_chunks (doc_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_vector_chunks_page_number ON vector_chunks (page_number)")
             
-            # Create vector similarity index (only if pgvector is available)
+            # Text index for hybrid retrieval (if pg_trgm is available)
             try:
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_vector_chunks_embedding ON vector_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_vector_chunks_trgm ON vector_chunks USING gin (chunk_text gin_trgm_ops)")
+            except Exception:
+                pass
+
+            # Create vector similarity index based on settings
+            try:
+                from modules.config.settings import settings
+                if settings.VECTOR_INDEX_TYPE == 'hnsw':
+                    cur.execute(
+                        f"CREATE INDEX IF NOT EXISTS idx_vector_chunks_embedding_hnsw ON vector_chunks USING hnsw (embedding vector_l2_ops) WITH (m = {settings.HNSW_M}, ef_construction = {settings.HNSW_EF_CONSTRUCTION})"
+                    )
+                else:
+                    cur.execute(
+                        f"CREATE INDEX IF NOT EXISTS idx_vector_chunks_embedding ON vector_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = {settings.VECTOR_INDEX_LISTS})"
+                    )
             except Exception as e:
                 print(f"Could not create vector index (pgvector may not be available): {e}")
             
@@ -2320,41 +2339,77 @@ class DatabaseManager:
             if conn:
                 conn.close()
     
-    def similarity_search(self, doc_id: str, query_embedding: List[float], k: int = 5) -> List[Dict[str, Any]]:
-        """Perform similarity search using pgvector"""
+    def similarity_search(self, doc_id: str, query_embedding: List[float], k: int = 5, query_text: Optional[str] = None, hybrid: bool = False) -> List[Dict[str, Any]]:
+        """Perform similarity (or hybrid) search using pgvector.
+
+        hybrid=True combines vector similarity with trigram text similarity (requires pg_trgm).
+        """
         if not self.is_postgres:
             raise Exception("Vector similarity search is only supported with PostgreSQL")
-        
+
         conn = None
         try:
             conn = self.get_connection()
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            
+
             # Convert embedding to string format for PostgreSQL
             embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
-            
-            cur.execute("""
-                SELECT chunk_id, doc_id, page_number, chunk_text, 
-                       embedding <=> %s::vector as distance
-                FROM vector_chunks 
-                WHERE doc_id = %s
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
-            """, (embedding_str, doc_id, embedding_str, k))
-            
+
+            # Per-query tuning GUCs
+            try:
+                from modules.config.settings import settings
+                if settings.VECTOR_INDEX_TYPE == 'hnsw':
+                    cur.execute("SET LOCAL hnsw.ef_search = %s", (settings.HNSW_EF_SEARCH,))
+                else:
+                    cur.execute("SET LOCAL ivfflat.probes = %s", (settings.VECTOR_PROBES,))
+            except Exception:
+                pass
+
+            if hybrid and query_text:
+                from modules.config.settings import settings
+                cur.execute(
+                    """
+                    SELECT chunk_id, doc_id, page_number, chunk_text,
+                           1 - (embedding <=> %s::vector) AS vscore,
+                           similarity(chunk_text, %s) AS tscore,
+                           ((1 - (embedding <=> %s::vector)) * %s + similarity(chunk_text, %s) * %s) AS score
+                    FROM vector_chunks
+                    WHERE doc_id = %s
+                    ORDER BY score DESC
+                    LIMIT %s
+                    """,
+                    (embedding_str, query_text, embedding_str, 1.0 - settings.HYBRID_TEXT_WEIGHT, query_text, settings.HYBRID_TEXT_WEIGHT, doc_id, k),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT chunk_id, doc_id, page_number, chunk_text, 
+                           embedding <=> %s::vector as distance
+                    FROM vector_chunks 
+                    WHERE doc_id = %s
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (embedding_str, doc_id, embedding_str, k),
+                )
+
             results = []
             for row in cur.fetchall():
-                results.append({
+                item = {
                     'chunk_id': row['chunk_id'],
                     'doc_id': row['doc_id'],
                     'page': row['page_number'],
                     'text': row['chunk_text'],
-                    'distance': float(row['distance']),
-                    'similarity_score': 1 - float(row['distance'])  # Convert distance to similarity
-                })
-            
+                }
+                if 'distance' in row:
+                    item['distance'] = float(row['distance'])
+                    item['similarity_score'] = 1 - float(row['distance'])
+                if 'score' in row:
+                    item['score'] = float(row['score'])
+                results.append(item)
+
             return results
-            
+
         except Exception as e:
             raise Exception(f"Error performing similarity search: {e}")
         finally:

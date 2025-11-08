@@ -86,7 +86,14 @@ class Settings:
     # PostgreSQL/pgvector Configuration
     PGVECTOR_ENABLED = os.getenv('PGVECTOR_ENABLED', 'true').lower() == 'true'
     VECTOR_DIMENSIONS = int(os.getenv('VECTOR_DIMENSIONS', 1536))  # OpenAI embedding dimensions
-    VECTOR_INDEX_LISTS = int(os.getenv('VECTOR_INDEX_LISTS', 100))  # IVFFlat index parameter
+    # Vector index configuration
+    VECTOR_INDEX_TYPE = os.getenv('VECTOR_INDEX_TYPE', 'ivfflat').lower()  # 'ivfflat' or 'hnsw'
+    VECTOR_INDEX_LISTS = int(os.getenv('VECTOR_INDEX_LISTS', 100))  # IVFFlat lists
+    VECTOR_PROBES = int(os.getenv('VECTOR_PROBES', 10))  # ivfflat.probes at query time
+    HNSW_M = int(os.getenv('HNSW_M', 16))
+    HNSW_EF_CONSTRUCTION = int(os.getenv('HNSW_EF_CONSTRUCTION', 200))
+    HNSW_EF_SEARCH = int(os.getenv('HNSW_EF_SEARCH', 64))
+    HYBRID_TEXT_WEIGHT = float(os.getenv('HYBRID_TEXT_WEIGHT', 0.4))  # weight for text similarity in hybrid search
     
     # Database Connection Pool Settings
     DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 10))

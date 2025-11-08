@@ -211,8 +211,8 @@ class PDFProcessor:
         # Generate embedding for the question
         query_embedding = self.embeddings.embed_query(question)
         
-        # Perform similarity search
-        results = db_manager.similarity_search(doc_id, query_embedding, k)
+        # Perform similarity search (hybrid: vector + trigram for speed/quality)
+        results = db_manager.similarity_search(doc_id, query_embedding, k, query_text=question, hybrid=True)
         
         return results
     
