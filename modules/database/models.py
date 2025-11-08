@@ -557,8 +557,18 @@ class DatabaseManager:
                 try:
                     if self.is_postgres:
                         if self._pg_pool is not None:
-                            # Get a pooled connection and monkey‑patch close() to return to pool
-                            conn = self._pg_pool.getconn()
+                            # Try to obtain a pooled connection
+                            try:
+                                conn = self._pg_pool.getconn()
+                            except Exception as pool_err:
+                                # Pool may be temporarily exhausted; fall back to a direct connection
+                                logger.warning(
+                                    "db_pool_get_failed_fallback",
+                                    extra={"error": str(pool_err)},
+                                )
+                                return psycopg2.connect(**self.postgres_config)
+
+                            # Wrap close() to return to pool
                             try:
                                 original_close = conn.close
 
@@ -572,11 +582,10 @@ class DatabaseManager:
                                         except Exception:
                                             pass
 
-                                # Mark as pooled and override close
                                 setattr(conn, "_ecadoc_pooled", True)
                                 conn.close = _release_back_to_pool  # type: ignore[assignment]
                             except Exception:
-                                # If anything goes wrong with wrapping, return raw conn
+                                # If wrapping fails, return raw connection (still functional)
                                 pass
                             return conn
                         return psycopg2.connect(**self.postgres_config)
@@ -603,7 +612,7 @@ class DatabaseManager:
     def release_connection(self, conn):
         """Release or close a database connection depending on backend/pool."""
         try:
-            if self.use_rds and self.is_postgres and self._pg_pool is not None:
+            if getattr(conn, "_ecadoc_pooled", False) and self._pg_pool is not None:
                 self._pg_pool.putconn(conn)
             else:
                 conn.close()
