@@ -189,8 +189,19 @@ class StorageService:
         
         # Default to free trial limits
         user = self.db.get_user_by_id(user_id)
-        if user and (datetime.now() - user.created_at).days <= 30:
-            return 15 * 1024  # 15GB trial
+        if user:
+            created_at = user.created_at
+            if isinstance(created_at, str):
+                try:
+                    created_at = datetime.fromisoformat(created_at)
+                except ValueError:
+                    created_at = None
+
+            if created_at and (datetime.now() - created_at).days <= 30:
+                return 15 * 1024  # 15GB trial
+
+            if created_at is None:
+                return 15 * 1024  # default trial when timestamp missing
         
         # No subscription - minimal storage
         return 100  # 100MB free tier
