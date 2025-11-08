@@ -557,7 +557,28 @@ class DatabaseManager:
                 try:
                     if self.is_postgres:
                         if self._pg_pool is not None:
-                            return self._pg_pool.getconn()
+                            # Get a pooled connection and monkey‑patch close() to return to pool
+                            conn = self._pg_pool.getconn()
+                            try:
+                                original_close = conn.close
+
+                                def _release_back_to_pool(close_ref=original_close, pool=self._pg_pool, c=conn):
+                                    try:
+                                        pool.putconn(c)
+                                    except Exception:
+                                        # Fallback to actual close if pool put fails
+                                        try:
+                                            close_ref()
+                                        except Exception:
+                                            pass
+
+                                # Mark as pooled and override close
+                                setattr(conn, "_ecadoc_pooled", True)
+                                conn.close = _release_back_to_pool  # type: ignore[assignment]
+                            except Exception:
+                                # If anything goes wrong with wrapping, return raw conn
+                                pass
+                            return conn
                         return psycopg2.connect(**self.postgres_config)
                     else:
                         raise Exception("Only PostgreSQL is supported (configure DB_PORT=5432)")
