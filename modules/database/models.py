@@ -938,35 +938,6 @@ class DatabaseManager:
             # Create indexes for project_documents
             cur.execute("CREATE INDEX IF NOT EXISTS idx_project_documents_project_id ON project_documents (project_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_project_documents_doc_id ON project_documents (doc_id)")
-
-            # Jobs table for async task status (MySQL)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS jobs (
-                    id VARCHAR(255) PRIMARY KEY,
-                    user_id INT NOT NULL,
-                    status VARCHAR(50) NOT NULL,
-                    error TEXT,
-                    metadata JSON,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    INDEX idx_jobs_user (user_id),
-                    INDEX idx_jobs_status (status)
-                ) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            """)
-
-            # Jobs table for async task status (SQLite)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS jobs (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    error TEXT,
-                    metadata TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-
             # Jobs table for async task status
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS jobs (
