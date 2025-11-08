@@ -21,6 +21,7 @@ from modules.storage.endpoints import router as storage_router
 from modules.feedback.endpoints import router as feedback_router
 from modules.profile.endpoints import router as profile_router
 from modules.notifications import notifications_router
+from modules.jobs.endpoints import router as jobs_router
 
 
 def create_app() -> FastAPI:
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(feedback_router)
     app.include_router(profile_router)
     app.include_router(notifications_router)
+    app.include_router(jobs_router)
 
     return app
 

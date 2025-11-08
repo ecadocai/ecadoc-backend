@@ -10,6 +10,7 @@ from modules.tasks.pdf_tasks import process_pdf_upload
 from modules.config.logger import logger
 import os
 import tempfile
+from modules.database import db_manager
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -50,6 +51,10 @@ async def upload_pdf(
             with os.fdopen(fd, "wb") as out:
                 out.write(content)
             task = process_pdf_upload.apply_async(args=[temp_path, file.filename, current_user_id])
+            try:
+                db_manager.create_job(task.id, current_user_id, "queued", {"filename": file.filename})
+            except Exception:
+                pass
             return {"status": "queued", "job_id": task.id}
         
         # Handle multiple files
@@ -65,6 +70,10 @@ async def upload_pdf(
                 with os.fdopen(fd, "wb") as out:
                     out.write(content)
                 task = process_pdf_upload.apply_async(args=[temp_path, file.filename, current_user_id])
+                try:
+                    db_manager.create_job(task.id, current_user_id, "queued", {"filename": file.filename})
+                except Exception:
+                    pass
                 jobs.append({"filename": file.filename, "job_id": task.id})
             return {"status": "queued", "jobs": jobs}
         

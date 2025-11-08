@@ -669,6 +669,98 @@ class DatabaseManager:
             finally:
                 if conn:
                     self.release_connection(conn)
+
+    # -------- Jobs helpers --------
+    def create_job(self, job_id: str, user_id: int, status: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        conn = self.get_connection()
+        cur = conn.cursor()
+        try:
+            if self.use_rds and self.is_postgres:
+                cur.execute(
+                    "INSERT INTO jobs (id, user_id, status, error, metadata) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                    (job_id, user_id, status, None, json.dumps(metadata or {})),
+                )
+            else:
+                # SQLite/MySQL: simple insert, ignore if exists
+                try:
+                    cur.execute(
+                        f"INSERT INTO jobs (id, user_id, status, error, metadata) VALUES ({self._get_placeholder()}, {self._get_placeholder()}, {self._get_placeholder()}, NULL, {self._get_placeholder()})",
+                        (job_id, user_id, status, json.dumps(metadata or {})),
+                    )
+                except Exception:
+                    pass
+            conn.commit()
+            return True
+        finally:
+            self.release_connection(conn)
+
+    def update_job_status(self, job_id: str, status: str, error: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        conn = self.get_connection()
+        cur = conn.cursor()
+        try:
+            if self.use_rds and self.is_postgres:
+                cur.execute(
+                    "UPDATE jobs SET status=%s, error=%s, metadata=COALESCE(metadata, '{}'::jsonb) || %s::jsonb, updated_at=NOW() WHERE id=%s",
+                    (status, error, json.dumps(metadata or {}), job_id),
+                )
+            else:
+                # SQLite/MySQL
+                cur.execute(
+                    f"UPDATE jobs SET status={self._get_placeholder()}, error={self._get_placeholder()}, metadata={self._get_placeholder()}, updated_at=CURRENT_TIMESTAMP WHERE id={self._get_placeholder()}",
+                    (status, error, json.dumps(metadata or {}), job_id),
+                )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            self.release_connection(conn)
+
+    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        conn = self.get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"SELECT id, user_id, status, error, metadata, created_at, updated_at FROM jobs WHERE id = {self._get_placeholder()}",
+                (job_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            # Row shape differs by backend; attempt to normalize
+            if isinstance(row, dict):
+                meta = row.get("metadata")
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except Exception:
+                        meta = None
+                return {
+                    "id": row.get("id"),
+                    "user_id": row.get("user_id"),
+                    "status": row.get("status"),
+                    "error": row.get("error"),
+                    "metadata": meta,
+                    "created_at": row.get("created_at"),
+                    "updated_at": row.get("updated_at"),
+                }
+            else:
+                # Positional tuple result
+                meta = row[4]
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except Exception:
+                        meta = None
+                return {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "status": row[2],
+                    "error": row[3],
+                    "metadata": meta,
+                    "created_at": row[5],
+                    "updated_at": row[6],
+                }
+        finally:
+            self.release_connection(conn)
     
     def init_database(self):
         """Initialize database tables"""
@@ -846,6 +938,49 @@ class DatabaseManager:
             # Create indexes for project_documents
             cur.execute("CREATE INDEX IF NOT EXISTS idx_project_documents_project_id ON project_documents (project_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_project_documents_doc_id ON project_documents (doc_id)")
+
+            # Jobs table for async task status (MySQL)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id VARCHAR(255) PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    status VARCHAR(50) NOT NULL,
+                    error TEXT,
+                    metadata JSON,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_jobs_user (user_id),
+                    INDEX idx_jobs_status (status)
+                ) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+
+            # Jobs table for async task status (SQLite)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    metadata TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Jobs table for async task status
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id VARCHAR(255) PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    status VARCHAR(50) NOT NULL,
+                    error TEXT,
+                    metadata JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs (user_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status)")
 
             # Create project_members table
             cur.execute("""
