@@ -5,6 +5,10 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from typing import List
 from modules.pdf_processing.service import pdf_processor
 from modules.auth.deps import get_current_user_id
+from modules.tasks.pdf_tasks import process_pdf_upload
+from modules.config.logger import logger
+import os
+import tempfile
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -17,7 +21,7 @@ async def upload_pdf(
     Upload and index PDF document(s) - supports both single and multiple files, requires JWT
     """
     try:
-        print(f"Debug: received {len(files)} files for upload")
+        logger.debug("upload_received", extra={"files": len(files)})
         
         # Validate that we have files
         if not files or len(files) == 0:
@@ -29,7 +33,7 @@ async def upload_pdf(
         if len(valid_files) == 0:
             raise HTTPException(status_code=400, detail="No valid files provided")
         
-        print(f"Debug: processing {len(valid_files)} valid files")
+        logger.debug("upload_validated", extra={"valid_files": len(valid_files)})
         
         # Validate file types
         for file in valid_files:
@@ -39,35 +43,34 @@ async def upload_pdf(
         # Handle single file (backward compatibility)
         if len(valid_files) == 1:
             file = valid_files[0]
-            file_content = await file.read()
-            # Use authenticated user id, never trust client-provided user id
-            result = pdf_processor.upload_and_index_pdf(
-                file_content, file.filename, current_user_id
-            )
-            print(f"Debug: single file upload result: {result}")
-            return result
+            content = await file.read()
+            os.makedirs("/tmp/ecadoc_uploads", exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(prefix="ecadoc_", dir="/tmp/ecadoc_uploads")
+            with os.fdopen(fd, "wb") as out:
+                out.write(content)
+            task = process_pdf_upload.apply_async(args=[temp_path, file.filename, current_user_id])
+            return {"status": "queued", "job_id": task.id}
         
         # Handle multiple files
         else:
             file_contents = []
             filenames = []
             
+            jobs = []
             for file in valid_files:
                 content = await file.read()
-                file_contents.append(content)
-                filenames.append(file.filename)
-                print(f"Debug: processed file {file.filename}, size: {len(content)} bytes")
-            
-            result = pdf_processor.upload_and_index_multiple_pdfs(
-                file_contents, filenames, current_user_id
-            )
-            print(f"Debug: multiple files upload result: {result}")
-            return result
+                os.makedirs("/tmp/ecadoc_uploads", exist_ok=True)
+                fd, temp_path = tempfile.mkstemp(prefix="ecadoc_", dir="/tmp/ecadoc_uploads")
+                with os.fdopen(fd, "wb") as out:
+                    out.write(content)
+                task = process_pdf_upload.apply_async(args=[temp_path, file.filename, current_user_id])
+                jobs.append({"filename": file.filename, "job_id": task.id})
+            return {"status": "queued", "jobs": jobs}
         
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"Debug: Exception in upload_pdf: {e}")
+        logger.error("upload_error", extra={"error": str(e)})
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @router.post("/upload-multiple")
@@ -79,7 +82,7 @@ async def upload_multiple_pdfs(
     Upload and index multiple PDF documents, requires JWT
     """
     try:
-        print(f"Debug: received {len(files)} files for upload")
+        logger.debug("upload_received", extra={"files": len(files)})
         
         # Validate that we have files
         if not files or len(files) == 0:
@@ -91,35 +94,28 @@ async def upload_multiple_pdfs(
         if len(valid_files) == 0:
             raise HTTPException(status_code=400, detail="No valid files provided")
         
-        print(f"Debug: processing {len(valid_files)} valid files")
+        logger.debug("upload_validated", extra={"valid_files": len(valid_files)})
         
         # Validate file types
         for file in valid_files:
             if not file.filename.lower().endswith(".pdf"):
                 raise HTTPException(status_code=400, detail=f"File {file.filename} is not a PDF")
         
-        # Read file contents
-        file_contents = []
-        filenames = []
-        
+        jobs = []
         for file in valid_files:
             content = await file.read()
-            file_contents.append(content)
-            filenames.append(file.filename)
-            print(f"Debug: processed file {file.filename}, size: {len(content)} bytes")
-        
-        # Process files
-        result = pdf_processor.upload_and_index_multiple_pdfs(
-            file_contents, filenames, current_user_id
-        )
-        print(f"Debug: upload result: {result}")
-        
-        return result
+            os.makedirs("/tmp/ecadoc_uploads", exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(prefix="ecadoc_", dir="/tmp/ecadoc_uploads")
+            with os.fdopen(fd, "wb") as out:
+                out.write(content)
+            task = process_pdf_upload.apply_async(args=[temp_path, file.filename, current_user_id])
+            jobs.append({"filename": file.filename, "job_id": task.id})
+        return {"status": "queued", "jobs": jobs}
         
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"Debug: Exception in upload_multiple_pdfs: {e}")
+        logger.error("upload_error", extra={"error": str(e)})
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @router.get("/")

@@ -3,6 +3,7 @@ Configuration settings for the Floor Plan Agent API
 """
 import os
 from dotenv import load_dotenv
+from .logger import logger
 
 # Load environment variables
 load_dotenv()
@@ -105,13 +106,13 @@ class Settings:
         OUTPUT_DIR = None
         DOCS_DIR = None
         IMAGES_DIR = os.path.join(DATA_DIR, "images")
-        print("INFO: Using PostgreSQL database storage - local file directories disabled")
+        logger.info("storage_mode", extra={"mode": "postgres_database"})
     else:
         VECTORS_DIR = os.path.join(DATA_DIR, "vectors")
         OUTPUT_DIR = os.path.join(DATA_DIR, "outputs")
         DOCS_DIR = os.path.join(DATA_DIR, "docs")
         IMAGES_DIR = os.path.join(DATA_DIR, "images")
-        print("INFO: Using local file storage - all directories enabled")
+        logger.info("storage_mode", extra={"mode": "local_filesystem"})
     
     # Security Configuration
     PASSWORD_MIN_LENGTH = 8

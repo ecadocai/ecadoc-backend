@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from modules.config.settings import settings
+from modules.config.logger import logger
+from psycopg2.pool import SimpleConnectionPool
 
 class UserStatus(str, Enum):
     ACTIVE = "active"
@@ -460,6 +462,7 @@ class DatabaseManager:
 
         # Determine database type based on port
         self.is_postgres = settings.DB_PORT == 5432
+        self._pg_pool: SimpleConnectionPool | None = None
         
         if self.use_rds:
             if self.is_postgres:
@@ -471,6 +474,28 @@ class DatabaseManager:
                     'password': settings.DB_PASSWORD,
                     'connect_timeout': 30
                 }
+                # Initialize a PostgreSQL connection pool for better performance
+                try:
+                    minconn = 1
+                    maxconn = max(settings.DB_POOL_SIZE, 5)
+                    self._pg_pool = SimpleConnectionPool(
+                        minconn=minconn,
+                        maxconn=maxconn,
+                        host=settings.DB_HOST,
+                        port=settings.DB_PORT,
+                        dbname=settings.DB_NAME,
+                        user=settings.DB_USER,
+                        password=settings.DB_PASSWORD,
+                    )
+                    logger.info("db_pool_initialized", extra={
+                        "minconn": minconn,
+                        "maxconn": maxconn,
+                        "host": settings.DB_HOST,
+                        "db": settings.DB_NAME,
+                    })
+                except Exception as e:
+                    self._pg_pool = None
+                    logger.error("db_pool_init_failed", extra={"error": str(e)})
         
         self.init_database()
         # One-time startup sequence sync for PostgreSQL to prevent PK collisions
@@ -486,10 +511,10 @@ class DatabaseManager:
                 )
                 conn.commit()
             except Exception as e:
-                print(f"WARNING: Unable to sync userdata id sequence: {e}")
+                logger.warning("sequence_sync_failed", extra={"error": str(e)})
             finally:
                 if conn:
-                    conn.close()
+                    self.release_connection(conn)
 
     @staticmethod
     def _map_user_row(row) -> Optional[User]:
@@ -531,6 +556,8 @@ class DatabaseManager:
             for attempt in range(max_retries):
                 try:
                     if self.is_postgres:
+                        if self._pg_pool is not None:
+                            return self._pg_pool.getconn()
                         return psycopg2.connect(**self.postgres_config)
                     else:
                         raise Exception("Only PostgreSQL is supported (configure DB_PORT=5432)")
@@ -541,13 +568,29 @@ class DatabaseManager:
                     
                     # Handle specific connection errors
                     import time
-                    print(f"Connection attempt {attempt + 1} failed, retrying in {retry_delay}s...")
+                    logger.warning(
+                        "db_connect_retry",
+                        extra={"attempt": attempt + 1, "retry_delay": retry_delay, "error": str(e)},
+                    )
                     time.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
                 except Exception as e:
                     raise Exception(f"Unexpected database connection error: {e}")
         else:
             return sqlite3.connect(self.db_name)
+
+    def release_connection(self, conn):
+        """Release or close a database connection depending on backend/pool."""
+        try:
+            if self.use_rds and self.is_postgres and self._pg_pool is not None:
+                self._pg_pool.putconn(conn)
+            else:
+                conn.close()
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
     
     def execute_with_retry(self, query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = False):
         """Execute query with connection retry logic and proper error handling"""
@@ -595,7 +638,7 @@ class DatabaseManager:
                 raise Exception(f"Database query error: {e}")
             finally:
                 if conn:
-                    conn.close()
+                    self.release_connection(conn)
     
     def init_database(self):
         """Initialize database tables"""
@@ -604,7 +647,7 @@ class DatabaseManager:
 
         if self.use_rds and self.is_postgres:
             # PostgreSQL table creation statements
-            print("Initializing PostgreSQL database...")
+            logger.info("db_init", extra={"engine": "postgresql"})
             
             # Ensure pgvector extension is available
             self.ensure_pgvector_extension()
